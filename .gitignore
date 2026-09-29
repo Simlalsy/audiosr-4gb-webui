@@ -19,3 +19,6 @@ output_test*/
 *.pt
 *.pth
 *.log
+
+# the release packaging script must be tracked even though `build*` is ignored
+!release/build_release.py
