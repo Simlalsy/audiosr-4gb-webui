@@ -9,3 +9,13 @@ build*
 *.wav
 dist/
 *DS_Store*
+
+# --- local environment / model weights / scratch output (fork additions) ---
+.venv/
+webui_uploads/
+output_test*/
+*.bin
+*.ckpt
+*.pt
+*.pth
+*.log

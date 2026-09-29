@@ -1,0 +1,38 @@
+# AudioSR low-VRAM / Web UI fork — provenance notice
+
+This repository is a MODIFIED VERSION of AudioSR:
+
+    Upstream : https://github.com/haoheliu/versatile_audio_super_resolution
+    Paper    : Liu, Chen, Tian, Wang, Plumbley — "AudioSR: Versatile Audio
+               Super-Resolution at Scale", ICASSP 2024 (arXiv:2309.07314)
+    License  : MIT — the upstream LICENSE file is kept unchanged in ./LICENSE
+
+All copyright of the upstream code, the model architecture, the training /
+inference algorithm (the `audiosr/` package) and the bundled example assets
+belongs to the original authors. No upstream file was altered by this fork.
+
+Additions made in this repository (all additive, Windows-oriented tooling):
+
+    run_lowvram.py             low-VRAM inference wrapper: fp16 UNet on the
+                               GPU, VAE/vocoder on the CPU, SDPA attention,
+                               chunked long-audio inference, true-stereo
+                               per-channel processing, resampling and
+                               ffmpeg-based output conversion
+    webui_server.py            local web UI (standard library only, optional
+                               LAN access, model kept resident in memory)
+    双击启动网页界面.cmd         one-click local Web UI launcher
+    双击启动局域网网页界面.cmd   one-click LAN Web UI launcher (0.0.0.0)
+    双击选择音频处理.cmd +
+    pick_and_run.py            double-click "pick a file, process it" helper
+    run_audiosr.cmd            command-line launcher
+    test_formats.py,
+    test_192k.py,
+    test_outsr.py,
+    check_output.py            self-check / validation scripts
+    README_CN.md               Chinese documentation for the additions
+
+Not included in this repository: the Python virtual environment (`.venv/`),
+the model weights (`pytorch_model.bin`), generated audio (`output*/`) and the
+Web UI upload cache (`webui_uploads/`) — all excluded via `.gitignore`.
+
+If this fork is useful to you, please star and cite the upstream project.
