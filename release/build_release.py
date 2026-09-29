@@ -2,7 +2,12 @@
 """打包两个发行版 ZIP：A 版（自动下载模型）/ B 版（完全离线）。
 
 用法（在仓库根目录执行）：
-    .venv\\Scripts\\python.exe release\\build_release.py [版本号] [引用]
+    .venv\\Scripts\\python.exe release\\build_release.py [版本号] [引用] [--with-model]
+
+    版本号       默认 v1.0.0
+    引用         默认 HEAD（也可写 main 或某个 tag）
+    --with-model  额外把模型权重切成 <2 GiB 的分卷（GitHub 单附件上限），
+                  产物为 pytorch_model.bin.part-01 ...，供完全离线包使用
 
     版本号   默认 v1.0.0
     引用     默认 HEAD（也可写 main 或某个 tag）
@@ -20,6 +25,7 @@ ZIP 内部的顶层文件夹与 使用说明.txt 仍是中文（Windows 资源�
     2. B 版的 4 个 .cmd 启动脚本会插入 `set AUDIOSR_OFFLINE=1`，运行时绝不联网下载模型。
 """
 import hashlib
+import math
 import os
 import shutil
 import subprocess
@@ -33,6 +39,8 @@ RELEASE_DIR = os.path.join(ROOT, "release")
 DIST_DIR = os.path.join(ROOT, "dist")
 
 EXCLUDED_PREFIXES = ("release/", "dist/", ".check_")
+PART_LIMIT = 1_900_000_000  # bytes; GitHub allows < 2 GiB per release asset
+MODEL_SHA256 = "8a3506b9619ed32435ce2c115604750c7bdbb5ad8502be7b1a3131bde878aa01"
 CMD_FILES = (
     "run_audiosr.cmd",
     "双击启动网页界面.cmd",
@@ -61,6 +69,51 @@ def sha256(path):
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def find_model():
+    """Locate the pytorch_model.bin to slice (env / app dir / models / parent)."""
+    env = os.environ.get("AUDIOSR_CKPT")
+    if env and os.path.exists(env):
+        return env
+    for rel in ("pytorch_model.bin", os.path.join("models", "pytorch_model.bin")):
+        p = os.path.join(ROOT, rel)
+        if os.path.exists(p):
+            return p
+    parent = os.path.join(os.path.dirname(ROOT), "pytorch_model.bin")
+    if os.path.exists(parent):
+        return parent
+    return None
+
+
+def split_model(src, out_dir):
+    """Slice the checkpoint into <2 GiB parts named pytorch_model.bin.part-NN."""
+    size = os.path.getsize(src)
+    count = max(1, math.ceil(size / PART_LIMIT))
+    chunk = math.ceil(size / count)
+    results = []
+    with open(src, "rb") as f:
+        for i in range(count):
+            name = f"pytorch_model.bin.part-{i + 1:02d}"
+            dest = os.path.join(out_dir, name)
+            written = 0
+            with open(dest, "wb") as out:
+                while written < chunk:
+                    block = f.read(min(1 << 24, chunk - written))
+                    if not block:
+                        break
+                    out.write(block)
+                    written += len(block)
+            results.append((name, os.path.getsize(dest) / 2 ** 20, sha256(dest)))
+            print(
+                f"[ok] {name}  {os.path.getsize(dest) / 2 ** 20:.0f} MB  "
+                f"sha256={results[-1][2]}"
+            )
+            if written == 0:
+                os.remove(dest)
+                results.pop()
+                break
+    return results
 
 
 def crlf(path):
@@ -159,8 +212,11 @@ def build_zip(src_dir, zip_path, root_name):
 
 
 def main():
-    version = sys.argv[1] if len(sys.argv) > 1 else "v1.0.0"
-    ref = sys.argv[2] if len(sys.argv) > 2 else "HEAD"
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    flags = {a for a in sys.argv[1:] if a.startswith("--")}
+    version = args[0] if args else "v1.0.0"
+    ref = args[1] if len(args) > 1 else "HEAD"
+    with_model = "--with-model" in flags
     os.makedirs(DIST_DIR, exist_ok=True)
 
     dirty = subprocess.run(
@@ -217,8 +273,27 @@ def main():
         body_src = os.path.join(RELEASE_DIR, f"发布说明_{version}.md")
         body = open(body_src, encoding="utf-8").read()
         table = "\n".join(f"- `{n}` — {s:.1f} MB\n  `{h}`" for n, s, h in results)
+        body = body.replace("<!--CHECKSUMS-->", table)
+
+        if with_model:
+            model = find_model()
+            if not model:
+                raise SystemExit("找不到 pytorch_model.bin（可用 AUDIOSR_CKPT 指定）")
+            print(f"[info] 切分模型：{model}")
+            parts = split_model(model, DIST_DIR)
+            lines = [
+                f"完整文件 SHA-256：`{MODEL_SHA256}`（解压合并后会自动校验）",
+                "",
+                "| 分卷 | 大小 | SHA-256 |",
+                "| --- | --- | --- |",
+            ]
+            lines += [f"| `{n}` | {s:.0f} MB | `{h}` |" for n, s, h in parts]
+            body = body.replace("<!--MODELPARTS-->", "\n".join(lines))
+        else:
+            body = body.replace("<!--MODELPARTS-->", "（本次未生成模型分卷）")
+
         body_path = os.path.join(DIST_DIR, "release_body.md")
-        open(body_path, "w", encoding="utf-8").write(body.replace("<!--CHECKSUMS-->", table))
+        open(body_path, "w", encoding="utf-8").write(body)
         print(f"[ok] {body_path}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

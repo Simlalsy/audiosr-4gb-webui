@@ -1,8 +1,12 @@
 @echo off
+chcp 65001 >nul
 title AudioSR Web UI (LAN) - keep this window open
 cd /d "%~dp0"
 set NO_PROXY=*
 set HF_ENDPOINT=https://hf-mirror.com
+
+call "%~dp0_find_python.cmd"
+if errorlevel 1 goto nopython
 echo ============================================================
 echo  AudioSR Web UI - LAN mode
 echo  - the server listens on ALL network interfaces
@@ -13,5 +17,11 @@ echo  - press Ctrl+C here to stop the server
 echo  - on first run, allow Python through the Windows Firewall
 echo    (private networks) if Windows asks
 echo ============================================================
-".venv\Scripts\python.exe" "webui_server.py" --host 0.0.0.0
+"%PY_EXE%" "%~dp0webui_server.py" --host 0.0.0.0
 pause
+exit /b 0
+
+:nopython
+type "%~dp0提示_未找到Python环境.txt"
+pause
+exit /b 1

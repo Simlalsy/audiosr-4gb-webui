@@ -35,7 +35,10 @@ AUDIOSR_OFFLINE  1 = fully local: never download weights, fail with a clear
                  "fully local" release package)
 """
 import argparse
+import glob
+import hashlib
 import os
+import shutil
 import sys
 import time
 import types
@@ -88,6 +91,66 @@ def default_ckpt_path():
         if os.path.exists(path):
             return path
     return ckpt_candidates()[0]
+
+
+# SHA-256 of the official basic checkpoint (haoheliu/audiosr_basic).
+BASIC_MODEL_SHA256 = "8a3506b9619ed32435ce2c115604750c7bdbb5ad8502be7b1a3131bde878aa01"
+
+
+def _file_sha256(path, chunk=1 << 24):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(chunk), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def merge_model_parts(target=None, verify=True):
+    """Rebuild ``pytorch_model.bin`` from ``pytorch_model.bin.part*`` slices.
+
+    The "fully offline" release ships the checkpoint as several release assets
+    (< 2 GiB each, the GitHub limit). On the first run the slices are merged
+    back into one file next to the scripts and verified with SHA-256.
+    Returns the merged path, or None when there are no parts to merge.
+    """
+    target = target or os.path.join(BASE_DIR, "pytorch_model.bin")
+    if os.path.exists(target):
+        return target
+    parts = sorted(glob.glob(target + ".part*"))
+    if not parts:
+        return None
+
+    print(
+        f"[lowvram] 首次运行：正在合并 {len(parts)} 个模型分卷 -> "
+        f"{os.path.basename(target)}"
+    )
+    tmp = target + ".merging"
+    try:
+        with open(tmp, "wb") as out:
+            for i, part in enumerate(parts, 1):
+                size_mb = os.path.getsize(part) / 2 ** 20
+                print(
+                    f"[lowvram]   分卷 {i}/{len(parts)}："
+                    f"{os.path.basename(part)}（{size_mb:.0f} MB）"
+                )
+                with open(part, "rb") as src:
+                    shutil.copyfileobj(src, out, 1 << 24)
+        if verify:
+            print("[lowvram] 校验合并结果（SHA-256，约 10 秒）…")
+            digest = _file_sha256(tmp)
+            if digest != BASIC_MODEL_SHA256:
+                raise SystemExit(
+                    "[lowvram] 模型分卷合并后校验失败，请重新下载分卷：\n"
+                    f"           期望 {BASIC_MODEL_SHA256}\n"
+                    f"           实际 {digest}"
+                )
+        os.replace(tmp, target)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    print(f"[lowvram] 模型已就绪：{target}")
+    print("[lowvram] （下次启动将直接使用该文件，不再合并）")
+    return target
 
 # ---------------------------------------------------------------------------
 # Patch attention to SDPA BEFORE the model tree is built.
@@ -172,6 +235,11 @@ def set_gpu_vae(ld, enable, device="cuda:0"):
 
 def build_lowvram_model(model_name="basic", device="cuda:0", ckpt_path=None, gpu_vae=False):
     """Build AudioSR on CPU, then move only the fp16 UNet to `device`."""
+    if model_name == "basic" and not (ckpt_path and os.path.exists(ckpt_path)):
+        # the offline release ships the checkpoint as <2 GiB slices
+        merged = merge_model_parts()
+        if merged:
+            ckpt_path = merged
     if ckpt_path and os.path.exists(ckpt_path):
         # `audiosr.pipeline.build_model` calls `download_checkpoint(model_name)`
         # unconditionally; override it so a manually downloaded file is used.

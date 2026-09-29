@@ -9,27 +9,23 @@
   其余功能（网页界面、局域网、命令行、输出格式等）与 A 版完全一致。
 
 【第一次使用：三步】
-  1) 准备模型权重 pytorch_model.bin（约 5.75 GB），任选一种方式获取：
-       ① 用 A 版跑过一次后，从 Hugging Face 缓存里复制：
-            %USERPROFILE%\.cache\huggingface\hub\models--haoheliu--audiosr_basic\snapshots\<哈希>\pytorch_model.bin
-       ② 直接下载：
-            国内镜像  https://hf-mirror.com/haoheliu/audiosr_basic/resolve/main/pytorch_model.bin
-            官方站点  https://huggingface.co/haoheliu/audiosr_basic/resolve/main/pytorch_model.bin
-     放置位置（按优先级）：
-        · 本文件夹根目录（与 双击启动网页界面.cmd 同一层）  ← 推荐
-        · models\ 子目录
-        · 环境变量 AUDIOSR_CKPT 指向该文件
+  1) 把模型分卷放到本目录（与 双击启动网页界面.cmd 同一层）
+       从 Releases 页面下载这几个分卷（共约 6 GB；单个 < 2 GiB 是 GitHub 的硬限制）：
+           pytorch_model.bin.part-01、part-02、part-03、part-04
+       全部放到本文件夹根目录。首次启动时会自动合并成 pytorch_model.bin
+       并做 SHA-256 校验（约 1~2 分钟，只需一次），之后不再重复。
+       ★ 也可以直接放完整的 pytorch_model.bin（约 5.75 GB）：
+           放本目录、或 models\ 子目录、或用环境变量 AUDIOSR_CKPT 指定。
 
   2) 安装 Python 依赖（只需一次）
-       在文件夹地址栏输入 cmd 回车，然后依次执行：
-           python -m venv .venv
-           .venv\Scripts\pip install -r requirements.txt
-     这一步通常需要联网。若这台机器完全无网，请在有网环境下准备好
-     依赖后整体拷贝 .venv 目录过来（venv 内含绝对路径，拷到同盘同目录
-     最稳妥），或使用 pip download 离线安装。
+       双击  安装依赖.cmd   （自动创建 .venv 并安装 requirements.txt）
+       这一步需要联网。完全没有网络的机器：先在联网机器上跑完这一步，
+       再把整个文件夹（含 .venv）拷过来（.venv 与 Python 安装路径绑定，
+       两台机器 Python 版本/路径越一致越稳妥）。
 
   3) 双击：双击启动网页界面.cmd
      模型已就位，启动后不再有任何下载，直接进入可用状态。
+     若提示找不到 Python 环境，窗口会给出三种解决办法。
 
 【其它启动方式】与 A 版相同：
   · 双击启动局域网网页界面.cmd    手机/同网电脑访问

@@ -10,10 +10,10 @@
 
 【第一次使用：三步】
   1) 安装 Python 依赖（只需一次，需要联网）
-       在文件夹地址栏输入 cmd 回车，然后依次执行：
+       双击  安装依赖.cmd   （自动创建 .venv 并安装 requirements.txt）
+     若不想用它，也可手动执行：
            python -m venv .venv
            .venv\Scripts\pip install -r requirements.txt
-     建议 Python 3.10 左右（依赖里的 torch 是 cu118 版本）。
 
   2) 双击：双击启动网页界面.cmd
      首次启动会自动从 Hugging Face 镜像下载模型权重
@@ -21,11 +21,15 @@
          %USERPROFILE%\.cache\huggingface\hub\models--haoheliu--audiosr_basic\
      下载期间进度条会停在 "Loading AudioSR: basic"，属正常现象。
      国内网络已默认使用 https://hf-mirror.com 镜像。
+     ★ 如果程序目录里已经有完整 pytorch_model.bin，或放了
+       pytorch_model.bin.part-01… 分卷（见 Releases 页面），则不会下载：
+       分卷会在首次启动时自动合并并校验 SHA-256。
 
   3) 浏览器自动打开 http://127.0.0.1:7860
      拖入音频 → 点"开始处理" → 完成后可试听 / 下载。
      手机、平板等同一 Wi-Fi 设备请改用：双击启动局域网网页界面.cmd
      （窗口会打印 http://<本机IP>:7860 的访问地址）
+     若提示找不到 Python 环境，窗口会给出三种解决办法。
 
 【其它启动方式】
   · 双击选择音频处理.cmd    弹窗选文件 → 默认参数处理 → 自动打开输出目录
