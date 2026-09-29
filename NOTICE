@@ -29,7 +29,10 @@ Additions made in this repository (all additive, Windows-oriented tooling):
     test_192k.py,
     test_outsr.py,
     check_output.py            self-check / validation scripts
-    README_CN.md               Chinese documentation for the additions
+    README.md                  Chinese documentation for the additions (also
+                               rendered on the repository front page)
+    README_EN.md               the upstream English README (kept unchanged,
+                               plus the fork notice at the top)
 
 Not included in this repository: the Python virtual environment (`.venv/`),
 the model weights (`pytorch_model.bin`), generated audio (`output*/`) and the
