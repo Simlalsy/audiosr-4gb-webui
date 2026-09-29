@@ -50,6 +50,7 @@ DECODABLE_EXTS = {".wav", ".flac", ".mp3", ".ogg", ".opus"}
 _ld = None
 _ld_lock = threading.Lock()
 _ld_ready = False
+_model_error = None
 _gpu_vae_mode = None
 
 _jobs = {}
@@ -78,12 +79,25 @@ def get_duration(path):
 # ---------------------------------------------------------------------------
 # model management
 # ---------------------------------------------------------------------------
+def ckpt_present():
+    """True when a local checkpoint can be used (no download needed)."""
+    try:
+        return os.path.exists(lowvram.default_ckpt_path())
+    except Exception:
+        return False
+
+
 def get_model():
-    global _ld, _ld_ready
+    global _ld, _ld_ready, _model_error
     with _ld_lock:
         if _ld is None:
-            _ld = lowvram.build_lowvram_model("basic", "cuda:0", CKPT)
-            _ld_ready = True
+            try:
+                _ld = lowvram.build_lowvram_model("basic", "cuda:0", CKPT)
+                _ld_ready = True
+                _model_error = None
+            except BaseException as exc:  # surface it in the UI instead of spinning
+                _model_error = f"{type(exc).__name__}: {exc}"
+                raise
         return _ld
 
 
@@ -284,6 +298,8 @@ class Handler(BaseHTTPRequestHandler):
                 "device": "cuda:0" if torch.cuda.is_available() else "cpu",
                 "busy": any(j.state == "running" for j in _jobs.values()),
                 "queued": _queue.qsize(),
+                "local_ckpt": ckpt_present(),
+                "model_error": _model_error,
             })
         elif path == "/api/status":
             job = self._find_job()
@@ -556,9 +572,19 @@ async function health(){
   try{
     const j = await (await fetch("/api/health")).json();
     modelReady = j.model_ready;
-    $("#health").textContent = modelReady
-      ? `● 模型已就绪 · ${j.device}` + (j.busy ? " · 正在处理任务" : (j.queued ? ` · 队列 ${j.queued}` : " · 空闲"))
-      : "◌ 模型加载中（首次约 40 秒，请稍候）…";
+    let st, color = "";
+    if (j.model_error){
+      st = "✗ 模型加载失败：" + j.model_error;
+      color = "#f87171";
+    } else if (modelReady){
+      st = `● 模型已就绪 · ${j.device}` + (j.busy ? " · 正在处理任务" : (j.queued ? ` · 队列 ${j.queued}` : " · 空闲"));
+    } else if (j.local_ckpt){
+      st = "◌ 模型加载中（首次约 1 分钟，硬盘较慢时更久，请稍候）…";
+    } else {
+      st = "◌ 首次运行：正在下载模型权重（约 5.75 GB，进度见程序窗口）…";
+    }
+    $("#health").textContent = st;
+    $("#health").style.color = color;
   }catch(e){ $("#health").textContent = "✗ 无法连接本地服务"; }
   $("#go").disabled = !modelReady || !selectedFile || currentId !== null;
 }
