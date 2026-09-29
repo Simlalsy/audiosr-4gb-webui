@@ -75,7 +75,11 @@
   3. `models\pytorch_model.bin`；
   4. 上一级目录的 `pytorch_model.bin`；
   5. 都没有时，自动从 Hugging Face 下载（`haoheliu/audiosr_basic` / `haoheliu/audiosr_speech`）。
-     国内网络会自动走镜像 `HF_ENDPOINT=https://hf-mirror.com`（脚本已内置），并设置 `NO_PROXY=*` 绕过系统代理。
+     国内网络会自动走镜像 `HF_ENDPOINT=https://hf-mirror.com`（脚本已内置），失败会自动再试官方站；
+     同时设置 `NO_PROXY=*` 绕过系统代理。
+- **所有下载都在程序目录，不占 C 盘**：`HF_HOME`/`HF_HUB_CACHE` 默认指向 `程序目录\models\`；
+  安装依赖时 pip 缓存与临时文件用 `程序目录\.pip-cache\`、`程序目录\.tmp\`（安装完可删）。
+  另外，早期版本会在导入时下载 `roberta-base`（约 500 MB），现已改为惰性加载、无需下载。
 
 安装依赖（推荐双击 **`安装依赖.cmd`**，会自动选兼容的 Python 并创建 `.venv`）：
 
@@ -233,6 +237,9 @@ python run_lowvram.py -i clip.wav --out_sr 48000 --stereo split
 **Q：安装依赖报 `Could not find a version that satisfies the requirement torch==2.0.1+cu118`？**
 你的 Python 是 3.12 或更高（该版 torch 没有对应安装包）。安装 Python 3.10 后重跑 `安装依赖.cmd`，或 `set AUDIOSR_PY_BASE=D:\Python310\python.exe` 指定已有解释器。
 
+**Q：下载的模型和缓存会占用 C 盘吗？**
+不会。`HF_HOME`/`HF_HUB_CACHE` 默认指向 `程序目录\models\`，pip 缓存/临时文件用 `程序目录\.pip-cache\`、`程序目录\.tmp\`；上传与输出也在程序目录。安装完成后可自由删除 `.pip-cache`、`.tmp` 释放空间。
+
 **Q：安装依赖卡在 `git clone … huggingface/diffusers` 报 `Recv failure: Connection was reset`？**
 这是国内访问 GitHub 被重置。该依赖本项目并未用到，已在 `requirements.txt` 中注释掉；用最新版包的 `安装依赖.cmd` 即可正常安装。
 
@@ -240,15 +247,15 @@ python run_lowvram.py -i clip.wav --out_sr 48000 --stereo split
 
 不想自己配环境？[Releases](https://github.com/Simlalsy/audiosr-4gb-webui/releases) 提供打包好的 Windows 包（解压即用）：
 
-| 包                                                   | 说明                                                                                                                   |
-| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `AudioSR-LowVRAM-v1.1.2-A-online-model-download.zip` | 首次运行自动从 Hugging Face 镜像下载 `pytorch_model.bin`（约 5.75 GB，缓存到用户目录）；程序目录已有完整模型时不会下载 |
+| 包                                                   | 说明                                                                                                                                            |
+| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AudioSR-LowVRAM-v1.1.4-A-online-model-download.zip` | 首次运行自动从 Hugging Face 镜像下载 `pytorch_model.bin`（约 5.75 GB，保存到**程序目录** `models\`，不占 C 盘）；程序目录已有完整模型时不会下载 |
 
 用法：解压 → 双击 **`安装依赖.cmd`**（联网一次，自动建 `.venv`）→ 双击 `双击启动网页界面.cmd`；首次启动自动下载权重（已放好完整模型则不会下载）。包内 `使用说明.txt` 有逐步说明。
 
 想**完全离线**运行：把 `pytorch_model.bin` 放到程序目录（或 `models\`，或用 `AUDIOSR_CKPT` 指定），并在启动脚本里加一行 `set AUDIOSR_OFFLINE=1`。
 
-自己重新打包：在仓库根目录执行 `python release\build_release.py v1.1.2`（可选 `--with-offline` 生成完全离线版、`--with-model` 生成模型分卷），产物在 `dist\`，发布文案在 `release\发布说明_v1.1.2.md`。
+自己重新打包：在仓库根目录执行 `python release\build_release.py v1.1.4`（可选 `--with-offline` 生成完全离线版、`--with-model` 生成模型分卷），产物在 `dist\`，发布文案在 `release\发布说明_v1.1.4.md`。
 
 > **权重查找顺序**（两版本通用）：`AUDIOSR_CKPT` → 程序目录 `pytorch_model.bin`（没有时先尝试合并 `*.part*` 分卷）→ `models\pytorch_model.bin` → 上一级目录 `pytorch_model.bin`；都没找到时才联网下载（设了 `AUDIOSR_OFFLINE=1` 则直接报错）。
 

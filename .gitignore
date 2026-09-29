@@ -22,3 +22,8 @@ output_test*/
 
 # the release packaging script must be tracked even though `build*` is ignored
 !release/build_release.py
+
+# all downloads live inside the program folder (fork behaviour since v1.1.4)
+models/
+.pip-cache/
+.tmp/

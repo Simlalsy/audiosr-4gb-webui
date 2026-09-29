@@ -18,10 +18,11 @@
 
   2) 双击：双击启动网页界面.cmd
      首次启动会自动从 Hugging Face 镜像下载模型权重
-     （pytorch_model.bin，约 5.75 GB），缓存位置：
-         %USERPROFILE%\.cache\huggingface\hub\models--haoheliu--audiosr_basic\
-     下载期间进度条会停在 "Loading AudioSR: basic"，属正常现象。
-     国内网络已默认使用 https://hf-mirror.com 镜像。
+     （pytorch_model.bin，约 5.75 GB），下载到：
+         本程序目录\models\          ← 不会占用 C 盘
+     下载期间进度条会停在 "Loading AudioSR: basic"，属正常现象
+     （页面也会提示“正在下载模型权重”，失败会直接显示原因）。
+     国内网络已默认使用 https://hf-mirror.com 镜像，失败会自动再试官方站。
      ★ 如果程序目录里已经有完整 pytorch_model.bin，或放了
        pytorch_model.bin.part-01… 分卷（见 Releases 页面），则不会下载：
        分卷会在首次启动时自动合并并校验 SHA-256。

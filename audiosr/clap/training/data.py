@@ -38,7 +38,24 @@ def tokenizer(text):
 
 from transformers import RobertaTokenizer
 
-tokenize = RobertaTokenizer.from_pretrained("roberta-base")
+
+class _LazyRobertaTokenizer(object):
+    """Load ``roberta-base`` on first use instead of at import time.
+
+    The AudioSR *inference* pipeline never needs the CLAP text tokenizer, yet
+    importing this module used to pull ~500 MB from the Hub (or fail outright
+    when offline), which broke first runs and cluttered the C: drive cache.
+    """
+
+    _tokenizer = None
+
+    def __call__(self, *args, **kwargs):
+        if self._tokenizer is None:
+            self._tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
+        return self._tokenizer(*args, **kwargs)
+
+
+tokenize = _LazyRobertaTokenizer()
 
 
 def tokenizer(text):

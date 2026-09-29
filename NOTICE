@@ -38,7 +38,7 @@ Not included in this repository: the Python virtual environment (`.venv/`),
 the model weights (`pytorch_model.bin`), generated audio (`output*/`) and the
 Web UI upload cache (`webui_uploads/`) — all excluded via `.gitignore`.
 
-One upstream file was modified on purpose:
+Two upstream files were modified on purpose:
 
     requirements.txt           the `git+https://github.com/huggingface/diffusers.git`
                                line is commented out. Nothing in this repository
@@ -47,5 +47,15 @@ One upstream file was modified on purpose:
                                ("Recv failure: Connection was reset"), which
                                aborted the whole install. Re-enable it if you
                                actually need diffusers.
+
+    audiosr/clap/training/data.py
+                               `RobertaTokenizer.from_pretrained("roberta-base")`
+                               used to run at import time, which pulled ~500 MB
+                               from the Hub (or broke offline starts) even though
+                               the AudioSR inference path never uses the CLAP text
+                               tokenizer. It is now loaded lazily on first use.
+
+Nothing else inside `audiosr/` (model architecture, training and inference
+code) was changed.
 
 If this fork is useful to you, please star and cite the upstream project.

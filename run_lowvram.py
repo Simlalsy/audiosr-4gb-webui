@@ -43,12 +43,19 @@ import sys
 import time
 import types
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # Model weights come from Hugging Face - a CN mirror is used by default.
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 # Some Windows setups have a system-wide proxy that the old requests stack
 # trips over; bypass the proxy for the Hugging Face downloads in this process.
 os.environ.setdefault("NO_PROXY", "*")
 os.environ.setdefault("no_proxy", "*")
+# Keep every download inside the program folder (do NOT fill up the C: drive):
+# checkpoint, hub cache and anything else huggingface_hub stores.
+os.environ.setdefault("HF_HOME", os.path.join(BASE_DIR, "models"))
+os.environ.setdefault("HF_HUB_CACHE", os.path.join(BASE_DIR, "models", "hub"))
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 # Offline mode (used by the "fully local" release package): never touch the
 # network for weights. The launcher scripts of that package set
@@ -63,8 +70,6 @@ import numpy as np
 import torch
 
 torch.set_float32_matmul_precision("high")
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def ckpt_candidates():
@@ -95,6 +100,51 @@ def default_ckpt_path():
 
 # SHA-256 of the official basic checkpoint (haoheliu/audiosr_basic).
 BASIC_MODEL_SHA256 = "8a3506b9619ed32435ce2c115604750c7bddb5ad8502be7b1a3131bde878aa01"
+
+DOWNLOAD_ENDPOINTS = ("https://hf-mirror.com", "https://huggingface.co")
+
+
+def download_checkpoint_with_fallback(model_name="basic"):
+    """Download the checkpoint, trying the CN mirror first and then the Hub.
+
+    Everything is stored inside ``<program folder>\\models`` (HF_HOME and
+    HF_HUB_CACHE are set above, so the C: drive is left alone), and a hard link
+    is created next to the scripts so later runs - and the offline mode - find
+    the file immediately.
+    """
+    from huggingface_hub import hf_hub_download
+
+    repo_id = (
+        "haoheliu/audiosr_speech" if model_name == "speech" else "haoheliu/audiosr_basic"
+    )
+    errors = []
+    for endpoint in DOWNLOAD_ENDPOINTS:
+        os.environ["HF_ENDPOINT"] = endpoint
+        try:
+            print(
+                f"[lowvram] 下载模型权重 {repo_id}/pytorch_model.bin（约 5.75 GB）…\n"
+                f"[lowvram] 来源：{endpoint}\n"
+                f"[lowvram] 保存到：{os.environ['HF_HOME']}（不会占用 C 盘）"
+            )
+            path = hf_hub_download(repo_id=repo_id, filename="pytorch_model.bin")
+            print(f"[lowvram] 下载完成：{path}")
+            link = os.path.join(BASE_DIR, "pytorch_model.bin")
+            if model_name == "basic" and not os.path.exists(link):
+                try:
+                    os.link(path, link)
+                    print(f"[lowvram] 已在程序目录建立硬链接：{link}")
+                except OSError as exc:  # not fatal - the cache copy is used
+                    print(f"[lowvram] 建立硬链接失败（不影响使用）：{exc}")
+            return path
+        except Exception as exc:  # noqa: BLE001 - report it and try the next source
+            errors.append(f"{endpoint}: {type(exc).__name__}: {exc}")
+            print(f"[lowvram] 从 {endpoint} 下载失败，尝试下一个来源…")
+    raise SystemExit(
+        "[lowvram] 模型权重下载失败：\n  "
+        + "\n  ".join(errors)
+        + "\n  可手动下载后放到程序目录（与 .cmd 同层）或 models\\ 子目录：\n"
+        "    https://hf-mirror.com/haoheliu/audiosr_basic/resolve/main/pytorch_model.bin"
+    )
 
 
 def _file_sha256(path, chunk=1 << 24):
@@ -259,6 +309,14 @@ def build_lowvram_model(model_name="basic", device="cuda:0", ckpt_path=None, gpu
             f"[lowvram] checkpoint not found: {ckpt_path} "
             "-> falling back to the Hugging Face download"
         )
+    else:
+        print("[lowvram] 未提供本地权重，将自动下载到程序目录的 models\\ 下")
+
+    if not (ckpt_path and os.path.exists(ckpt_path)) and not OFFLINE:
+        #下载失败时自动换源（国内镜像 -> 官方站）
+        import audiosr.pipeline as _pipeline
+
+        _pipeline.download_checkpoint = download_checkpoint_with_fallback
     ld = build_model(model_name=model_name, device="cpu")
 
     if device.startswith("cuda") and not torch.cuda.is_available():
