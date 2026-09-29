@@ -16,4 +16,5 @@ setlocal
 set NO_PROXY=*
 set HF_ENDPOINT=https://hf-mirror.com
 "%~dp0.venv\Scripts\python.exe" "%~dp0run_lowvram.py" -s "%~dp0output" %*
-endlocal
+set RC=%ERRORLEVEL%
+endlocal & exit /b %RC%
