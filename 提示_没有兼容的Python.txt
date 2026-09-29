@@ -1,0 +1,21 @@
+============================================================
+ 没有找到兼容的 Python（需要 3.9 / 3.10 / 3.11）
+============================================================
+程序用的 PyTorch 2.0.1+cu118 只提供 Python 3.9~3.11 的安装包；
+用 3.12 / 3.13 / 3.15 会报：
+    Could not find a version that satisfies the requirement
+    torch==2.0.1+cu118
+
+请任选一种方式：
+ 1) 安装 Python 3.10（推荐；安装时勾选 "Add python.exe to PATH"）
+        https://www.python.org/downloads/release/python-31011/
+    装好后重新双击  安装依赖.cmd
+
+ 2) 机器上已装过 3.10 / 3.11（可用 py -0p 查看）：
+    在本窗口执行（把路径换成你的）：
+        set AUDIOSR_PY_BASE=D:\Python310\python.exe
+        "%~dp0安装依赖.cmd"
+    或直接指定给 pip：
+        py -3.10 -m venv .venv
+        .venv\Scripts\pip install -r requirements.txt
+============================================================

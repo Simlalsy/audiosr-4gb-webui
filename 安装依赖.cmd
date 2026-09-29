@@ -5,15 +5,12 @@ cd /d "%~dp0"
 set NO_PROXY=*
 set HF_ENDPOINT=https://hf-mirror.com
 type "%~dp0提示_安装依赖说明.txt"
-set "PY_BASE="
-for %%I in (python.exe) do if not defined PY_BASE set "PY_BASE=%%~$PATH:I"
-if not defined PY_BASE (
+call "%~dp0_find_python.cmd" --base-only
+if errorlevel 1 goto nopython
+if exist "%~dp0.venv\Scripts\python.exe" (
   echo.
-  echo [ERROR] python.exe not found on PATH.
-  echo         Install Python 3.10 first and tick "Add python.exe to PATH":
-  echo         https://www.python.org/downloads/release/python-31011/
-  pause
-  exit /b 1
+  echo [INFO] .venv already exists - deleting it so it can be rebuilt.
+  rmdir /s /q "%~dp0.venv"
 )
 echo Using base interpreter: %PY_BASE%
 "%PY_BASE%" -m venv "%~dp0.venv"
@@ -25,6 +22,11 @@ echo.
 echo [OK] Dependencies installed. You can now double-click 双击启动网页界面.cmd
 pause
 exit /b 0
+
+:nopython
+type "%~dp0提示_没有兼容的Python.txt"
+pause
+exit /b 1
 
 :fail
 echo.

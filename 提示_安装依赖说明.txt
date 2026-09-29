@@ -4,5 +4,10 @@
  · 将创建 .venv 并安装 requirements.txt
  · 包含 PyTorch cu118，下载量约 2.5 GB，请耐心等待
  · 国内使用清华 PyPI 镜像；PyTorch 走 requirements 内的官方源
- · 需要 Python 3.10（安装时请勾选 Add python.exe to PATH）
+ · 需要 Python 3.9 / 3.10 / 3.11（推荐 3.10）
+     原因：torch 2.0.1+cu118 没有 3.12+ 的安装包
+     安装 Python 时请勾选 "Add python.exe to PATH"
+ · 已装过 3.10/3.11 但不在默认位置？先执行：
+     set AUDIOSR_PY_BASE=D:\Python310\python.exe
+   再双击本脚本即可
 ============================================================
