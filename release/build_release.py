@@ -40,7 +40,7 @@ DIST_DIR = os.path.join(ROOT, "dist")
 
 EXCLUDED_PREFIXES = ("release/", "dist/", ".check_")
 PART_LIMIT = 1_900_000_000  # bytes; GitHub allows < 2 GiB per release asset
-MODEL_SHA256 = "8a3506b9619ed32435ce2c115604750c7bdbb5ad8502be7b1a3131bde878aa01"
+MODEL_SHA256 = "8a3506b9619ed32435ce2c115604750c7bddb5ad8502be7b1a3131bde878aa01"
 CMD_FILES = (
     "run_audiosr.cmd",
     "双击启动网页界面.cmd",
@@ -279,7 +279,15 @@ def main():
             model = find_model()
             if not model:
                 raise SystemExit("找不到 pytorch_model.bin（可用 AUDIOSR_CKPT 指定）")
-            print(f"[info] 切分模型：{model}")
+            digest = sha256(model)
+            if digest != MODEL_SHA256:
+                raise SystemExit(
+                    "模型 SHA-256 与代码里的常量不一致（防止发布出打不开的包）：\n"
+                    f"  文件: {digest}\n"
+                    f"  常量: {MODEL_SHA256}\n"
+                    "请同步 run_lowvram.BASIC_MODEL_SHA256 与本文件的 MODEL_SHA256。"
+                )
+            print(f"[info] 切分模型：{model}（SHA-256 与代码常量一致）")
             parts = split_model(model, DIST_DIR)
             lines = [
                 f"完整文件 SHA-256：`{MODEL_SHA256}`（解压合并后会自动校验）",

@@ -94,7 +94,7 @@ def default_ckpt_path():
 
 
 # SHA-256 of the official basic checkpoint (haoheliu/audiosr_basic).
-BASIC_MODEL_SHA256 = "8a3506b9619ed32435ce2c115604750c7bdbb5ad8502be7b1a3131bde878aa01"
+BASIC_MODEL_SHA256 = "8a3506b9619ed32435ce2c115604750c7bddb5ad8502be7b1a3131bde878aa01"
 
 
 def _file_sha256(path, chunk=1 << 24):
