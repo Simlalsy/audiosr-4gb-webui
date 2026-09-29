@@ -231,8 +231,8 @@ python run_lowvram.py -i clip.wav --out_sr 48000 --stereo split
 
 不想自己配环境？[Releases](https://github.com/Simlalsy/audiosr-4gb-webui/releases) 提供打包好的 Windows 包（解压即用）：
 
-| 包 | 说明 |
-| --- | --- |
+| 包                                                   | 说明                                                                                                                   |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `AudioSR-LowVRAM-v1.1.0-A-online-model-download.zip` | 首次运行自动从 Hugging Face 镜像下载 `pytorch_model.bin`（约 5.75 GB，缓存到用户目录）；程序目录已有完整模型时不会下载 |
 
 用法：解压 → 双击 **`安装依赖.cmd`**（联网一次，自动建 `.venv`）→ 双击 `双击启动网页界面.cmd`；首次启动自动下载权重（已放好完整模型则不会下载）。包内 `使用说明.txt` 有逐步说明。
