@@ -1,0 +1,50 @@
+============================================================
+ AudioSR 低显存版 —— A 版：自动下载模型（需要联网）
+============================================================
+
+【这个包是做什么的】
+  AudioSR 是"音频超分辨率"（把低音质音频变高清）模型。
+  本包是它的社区修改版：让 4 GB 显存的笔记本显卡也能跑，并附带
+  网页界面（含局域网访问）、双击即用脚本。算法与模型代码来自上游，
+  未作修改，只增加了外围工具。
+
+【第一次使用：三步】
+  1) 安装 Python 依赖（只需一次，需要联网）
+       在文件夹地址栏输入 cmd 回车，然后依次执行：
+           python -m venv .venv
+           .venv\Scripts\pip install -r requirements.txt
+     建议 Python 3.10 左右（依赖里的 torch 是 cu118 版本）。
+
+  2) 双击：双击启动网页界面.cmd
+     首次启动会自动从 Hugging Face 镜像下载模型权重
+     （pytorch_model.bin，约 5.75 GB），缓存位置：
+         %USERPROFILE%\.cache\huggingface\hub\models--haoheliu--audiosr_basic\
+     下载期间进度条会停在 "Loading AudioSR: basic"，属正常现象。
+     国内网络已默认使用 https://hf-mirror.com 镜像。
+
+  3) 浏览器自动打开 http://127.0.0.1:7860
+     拖入音频 → 点"开始处理" → 完成后可试听 / 下载。
+     手机、平板等同一 Wi-Fi 设备请改用：双击启动局域网网页界面.cmd
+     （窗口会打印 http://<本机IP>:7860 的访问地址）
+
+【其它启动方式】
+  · 双击选择音频处理.cmd    弹窗选文件 → 默认参数处理 → 自动打开输出目录
+  · run_audiosr.cmd -i "文件路径" [参数]
+       例：run_audiosr.cmd -i "D:\audio\song.mp3" --chunking --out_format mp3
+
+【前置要求】
+  · Windows 10/11 + Python 3.10（建议）
+  · ffmpeg 与 ffprobe 必须在 PATH 中（保存输出时会调用）
+       安装：winget install Gyan.FFmpeg
+  · NVIDIA 显卡 4 GB 显存即可；纯 CPU 也行（--device cpu，很慢）
+
+【输出位置】
+  output\<时间戳>\<文件名>_AudioSR_Processed_48K.wav
+  加 --out_format mp3|flac|m4a|ogg 会另存一份，wav 母带保留。
+
+【想完全离线？】
+  请改用 B 版（完全离线），把它和 pytorch_model.bin 放在一起即可。
+
+【详细说明】
+  本包内 README.md（中文）；项目主页：
+      https://github.com/Simlalsy/audiosr-4gb-webui

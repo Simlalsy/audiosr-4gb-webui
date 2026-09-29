@@ -25,7 +25,8 @@
 7. [命令行参数](#7-命令行参数)
 8. [自检脚本](#8-自检脚本)
 9. [常见问题](#9-常见问题)
-10. [许可与致谢](#10-许可与致谢)
+10. [发行版（Releases）](#10-发行版releases)
+11. [许可与致谢](#11-许可与致谢)
 
 ---
 
@@ -220,7 +221,26 @@ python run_lowvram.py -i clip.wav --out_sr 48000 --stereo split
 **Q：`webui_uploads\` 和 `output\` 可以删吗？**
 可以，都是普通结果文件；两者已在 `.gitignore` 中，不会进版本库。
 
-## 10. 许可与致谢
+**Q：怎样彻底禁止程序联网下载模型？**
+设置环境变量 `AUDIOSR_OFFLINE=1`（发行版 B 的启动脚本已内置）：此时只使用本地权重，找不到就直接报错，不会发起任何下载。
+
+## 10. 发行版（Releases）
+
+不想自己配环境？[Releases](https://github.com/Simlalsy/audiosr-4gb-webui/releases) 提供两个打包好的 ZIP，**源码完全相同，只是权重获取方式不同**：
+
+| 包 | 适用场景 | 差异 |
+| --- | --- | --- |
+| `A-自动下载模型` | 有网络、图省事 | 首次运行自动从 Hugging Face 镜像下载 `pytorch_model.bin`（约 5.75 GB，缓存到用户目录） |
+| `B-完全离线` | 内网 / 离线机器，或想自己管理权重 | 启动脚本内置 `AUDIOSR_OFFLINE=1`，**绝不联网下载**；权重缺失时立刻报错并提示放置位置 |
+
+两个包用法相同：解压 → 建 `.venv` 并装 `requirements.txt` → 双击 `双击启动网页界面.cmd`。
+B 版记得先把 `pytorch_model.bin` 放到**程序目录**（或 `models\`，或用 `AUDIOSR_CKPT` 指定）；包内 `使用说明.txt` 有详细步骤。
+
+自己重新打包：在仓库根目录执行 `python release\build_release.py v1.0.0`，产物在 `dist\`，发布文案在 `release\发布说明_v1.0.0.md`。
+
+> **权重查找顺序**（两个版本通用）：`AUDIOSR_CKPT` → 程序目录 `pytorch_model.bin` → `models\pytorch_model.bin` → 上一级目录 `pytorch_model.bin`；都没找到时才联网下载（A 版）或直接报错（B 版）。
+
+## 11. 许可与致谢
 
 - 上游项目 **AudioSR**：MIT License，作者 Haohe Liu 等，见 [LICENSE](LICENSE)（原样保留）与 [NOTICE](NOTICE)。
 - 本仓库的新增代码同样以 MIT 许可发布；示例音频、图片等资源版权归上游作者。

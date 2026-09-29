@@ -6,6 +6,7 @@
 > It keeps the upstream code untouched and adds a **4 GB-VRAM inference path**, a **local Web UI (LAN capable)** and **double-click Windows launchers**.
 > 👉 Chinese documentation (rendered on the repository front page): **[README.md](README.md)** · provenance details: **[NOTICE](NOTICE)**
 > 📄 This file keeps the upstream English README; the fork's additions are documented in Chinese in `README.md`.
+> 📦 Prebuilt Windows packages (online / fully-offline variants): see [Releases](https://github.com/Simlalsy/audiosr-4gb-webui/releases).
 > All credit for AudioSR itself belongs to the original authors — please star and cite the upstream project.
 
 [![arXiv](https://img.shields.io/badge/arXiv-2309.07314-brightgreen.svg?style=flat-square)](https://arxiv.org/abs/2309.07314) [![githubio](https://img.shields.io/badge/GitHub.io-Audio_Samples-blue?logo=Github&style=flat-square)](https://audioldm.github.io/audiosr) [![Replicate](https://replicate.com/nateraw/audio-super-resolution/badge)](https://replicate.com/nateraw/audio-super-resolution)

@@ -1,0 +1,53 @@
+============================================================
+ AudioSR 低显存版 —— B 版：完全离线（不自动下载模型）
+============================================================
+
+【和 A 版的唯一区别】
+  本版的 4 个启动脚本都内置了 AUDIOSR_OFFLINE=1：
+    · 运行期间绝不会联网下载模型权重；
+    · 权重缺失时会立刻报错并提示放置位置，不会"偷偷"开始下载。
+  其余功能（网页界面、局域网、命令行、输出格式等）与 A 版完全一致。
+
+【第一次使用：三步】
+  1) 准备模型权重 pytorch_model.bin（约 5.75 GB），任选一种方式获取：
+       ① 用 A 版跑过一次后，从 Hugging Face 缓存里复制：
+            %USERPROFILE%\.cache\huggingface\hub\models--haoheliu--audiosr_basic\snapshots\<哈希>\pytorch_model.bin
+       ② 直接下载：
+            国内镜像  https://hf-mirror.com/haoheliu/audiosr_basic/resolve/main/pytorch_model.bin
+            官方站点  https://huggingface.co/haoheliu/audiosr_basic/resolve/main/pytorch_model.bin
+     放置位置（按优先级）：
+        · 本文件夹根目录（与 双击启动网页界面.cmd 同一层）  ← 推荐
+        · models\ 子目录
+        · 环境变量 AUDIOSR_CKPT 指向该文件
+
+  2) 安装 Python 依赖（只需一次）
+       在文件夹地址栏输入 cmd 回车，然后依次执行：
+           python -m venv .venv
+           .venv\Scripts\pip install -r requirements.txt
+     这一步通常需要联网。若这台机器完全无网，请在有网环境下准备好
+     依赖后整体拷贝 .venv 目录过来（venv 内含绝对路径，拷到同盘同目录
+     最稳妥），或使用 pip download 离线安装。
+
+  3) 双击：双击启动网页界面.cmd
+     模型已就位，启动后不再有任何下载，直接进入可用状态。
+
+【其它启动方式】与 A 版相同：
+  · 双击启动局域网网页界面.cmd    手机/同网电脑访问
+  · 双击选择音频处理.cmd          弹窗选文件处理
+  · run_audiosr.cmd -i "文件路径" [参数]
+
+【需要"语音"权重时（可选）】
+  默认只用 basic 权重。若要使用 --model_name speech，请另外准备
+  haoheliu/audiosr_speech 的 pytorch_model.bin，并用环境变量
+  AUDIOSR_CKPT 指向它（例如在启动前的命令行里 set AUDIOSR_CKPT=D:\...）。
+
+【前置要求】
+  与 A 版相同：Windows 10/11 + Python 3.10、ffmpeg/ffprobe 在 PATH、
+  NVIDIA 显卡 4 GB 显存起（或 --device cpu）。
+
+【输出位置】
+  output\<时间戳>\<文件名>_AudioSR_Processed_48K.wav
+
+【详细说明】
+  本包内 README.md（中文）；项目主页：
+      https://github.com/Simlalsy/audiosr-4gb-webui

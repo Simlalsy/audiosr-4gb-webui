@@ -25,6 +25,14 @@ python run_lowvram.py -i input.wav                       # short file (<= 10 s)
 python run_lowvram.py -i long.mp3 --chunking             # long file, chunked
 python run_lowvram.py -i input.wav --ddim_steps 30 --chunk_duration 6
 python run_lowvram.py -i input.wav --device cpu          # pure CPU fallback
+
+Environment variables
+---------------------
+AUDIOSR_CKPT     path of a manually downloaded pytorch_model.bin (skips the
+                 Hugging Face download)
+AUDIOSR_OFFLINE  1 = fully local: never download weights, fail with a clear
+                 message when the checkpoint is missing (used by the
+                 "fully local" release package)
 """
 import argparse
 import os
@@ -39,6 +47,15 @@ os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 os.environ.setdefault("NO_PROXY", "*")
 os.environ.setdefault("no_proxy", "*")
 
+# Offline mode (used by the "fully local" release package): never touch the
+# network for weights. The launcher scripts of that package set
+# AUDIOSR_OFFLINE=1 for you; if the checkpoint is missing the model loader
+# reports it instead of silently trying to download several GB.
+OFFLINE = os.environ.get("AUDIOSR_OFFLINE") == "1"
+if OFFLINE:
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
 import numpy as np
 import torch
 
@@ -47,17 +64,30 @@ torch.set_float32_matmul_precision("high")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-def default_ckpt_path():
-    """Where a manually downloaded pytorch_model.bin is expected.
+def ckpt_candidates():
+    """Places where a manually downloaded pytorch_model.bin is looked for."""
+    return [
+        os.path.join(BASE_DIR, "pytorch_model.bin"),  # next to the scripts
+        os.path.join(BASE_DIR, "models", "pytorch_model.bin"),  # .\models\
+        os.path.join(os.path.dirname(BASE_DIR), "pytorch_model.bin"),  # one level up
+    ]
 
-    Order: $AUDIOSR_CKPT, then ``pytorch_model.bin`` in the folder ABOVE this
-    repo (the layout used during development). The path may not exist - the
-    model loader falls back to the Hugging Face download in that case.
+
+def default_ckpt_path():
+    """Best guess for the local checkpoint path.
+
+    Order: $AUDIOSR_CKPT, then the first existing candidate from
+    ``ckpt_candidates()``. When nothing exists the first candidate is returned
+    so the caller can report it (and then either download, or fail in offline
+    mode).
     """
     env = os.environ.get("AUDIOSR_CKPT")
     if env:
         return env
-    return os.path.join(os.path.dirname(BASE_DIR), "pytorch_model.bin")
+    for path in ckpt_candidates():
+        if os.path.exists(path):
+            return path
+    return ckpt_candidates()[0]
 
 # ---------------------------------------------------------------------------
 # Patch attention to SDPA BEFORE the model tree is built.
@@ -149,6 +179,13 @@ def build_lowvram_model(model_name="basic", device="cuda:0", ckpt_path=None, gpu
 
         _pipeline.download_checkpoint = lambda model_name="basic": ckpt_path
         print(f"[lowvram] using local checkpoint: {ckpt_path}")
+    elif OFFLINE:
+        raise SystemExit(
+            "[lowvram] 离线模式（AUDIOSR_OFFLINE=1）下没有找到本地模型权重：\n"
+            f"           {ckpt_path or '(未指定)'}\n"
+            "           请把 pytorch_model.bin 放到本程序同一目录（或 models\\ 子目录），\n"
+            "           或设置环境变量 AUDIOSR_CKPT 指向该文件。"
+        )
     elif ckpt_path:
         print(
             f"[lowvram] checkpoint not found: {ckpt_path} "
