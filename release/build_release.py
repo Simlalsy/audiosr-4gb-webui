@@ -2,12 +2,13 @@
 """打包两个发行版 ZIP：A 版（自动下载模型）/ B 版（完全离线）。
 
 用法（在仓库根目录执行）：
-    .venv\\Scripts\\python.exe release\\build_release.py [版本号] [引用] [--with-model]
+    .venv\\Scripts\\python.exe release\\build_release.py [版本号] [引用] [--with-offline] [--with-model]
 
-    版本号       默认 v1.0.0
-    引用         默认 HEAD（也可写 main 或某个 tag）
-    --with-model  额外把模型权重切成 <2 GiB 的分卷（GitHub 单附件上限），
-                  产物为 pytorch_model.bin.part-01 ...，供完全离线包使用
+    版本号           默认 v1.0.0
+    引用             默认 HEAD（也可写 main 或某个 tag）
+    --with-offline   额外产出「B-完全离线」包（启动脚本内置 AUDIOSR_OFFLINE=1）
+    --with-model     额外把模型权重切成 <2 GiB 的分卷（GitHub 单附件上限），
+                     供完全离线包/离线分发使用
 
     版本号   默认 v1.0.0
     引用     默认 HEAD（也可写 main 或某个 tag）
@@ -47,20 +48,18 @@ CMD_FILES = (
     "双击启动局域网网页界面.cmd",
     "双击选择音频处理.cmd",
 )
-VARIANTS = (
-    {
-        "tag": "A-自动下载模型",
-        "slug": "A-online-model-download",
-        "doc": "使用说明_自动下载模型版.txt",
-        "offline": False,
-    },
-    {
-        "tag": "B-完全离线",
-        "slug": "B-fully-offline",
-        "doc": "使用说明_完全本地版.txt",
-        "offline": True,
-    },
-)
+ONLINE_VARIANT = {
+    "tag": "A-自动下载模型",
+    "slug": "A-online-model-download",
+    "doc": "使用说明_自动下载模型版.txt",
+    "offline": False,
+}
+OFFLINE_VARIANT = {
+    "tag": "B-完全离线",
+    "slug": "B-fully-offline",
+    "doc": "使用说明_完全本地版.txt",
+    "offline": True,
+}
 
 
 def sha256(path):
@@ -217,6 +216,8 @@ def main():
     version = args[0] if args else "v1.0.0"
     ref = args[1] if len(args) > 1 else "HEAD"
     with_model = "--with-model" in flags
+    with_offline = "--with-offline" in flags
+    variants = [ONLINE_VARIANT] + ([OFFLINE_VARIANT] if with_offline else [])
     os.makedirs(DIST_DIR, exist_ok=True)
 
     dirty = subprocess.run(
@@ -236,7 +237,7 @@ def main():
         extract(src_zip, base)
 
         results = []
-        for variant in VARIANTS:
+        for variant in variants:
             pkg_name = f"AudioSR-LowVRAM-{version}-{variant['tag']}"
             work = os.path.join(tmp, pkg_name)
             shutil.copytree(base, work)

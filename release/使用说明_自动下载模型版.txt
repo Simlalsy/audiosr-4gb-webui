@@ -46,8 +46,11 @@
   output\<时间戳>\<文件名>_AudioSR_Processed_48K.wav
   加 --out_format mp3|flac|m4a|ogg 会另存一份，wav 母带保留。
 
-【想完全离线？】
-  请改用 B 版（完全离线），把它和 pytorch_model.bin 放在一起即可。
+【想完全离线？（可选）】
+  程序内置离线模式：把 pytorch_model.bin 放到本目录（或 models\ 子目录，
+  或用环境变量 AUDIOSR_CKPT 指定），并在启动脚本里加一行：
+      set AUDIOSR_OFFLINE=1
+  这样运行期间绝不会联网；找不到权重时会直接报错并提示放置位置。
 
 【详细说明】
   本包内 README.md（中文）；项目主页：

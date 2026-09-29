@@ -222,26 +222,26 @@ python run_lowvram.py -i clip.wav --out_sr 48000 --stereo split
 可以，都是普通结果文件；两者已在 `.gitignore` 中，不会进版本库。
 
 **Q：怎样彻底禁止程序联网下载模型？**
-设置环境变量 `AUDIOSR_OFFLINE=1`（发行版 B 的启动脚本已内置）：此时只使用本地权重，找不到就直接报错，不会发起任何下载。
+设置环境变量 `AUDIOSR_OFFLINE=1`（在启动脚本里加一行 `set AUDIOSR_OFFLINE=1` 即可）：此时只使用本地权重，找不到就直接报错，不会发起任何下载。
 
 **Q：双击 .cmd 提示找不到 Python 环境？**
-启动脚本会先找同目录的 `.venv`，再找系统 Python（需已装依赖）。都没有时：双击 **`安装依赖.cmd`**（联网一次，自动创建 `.venv`）；若用的是发行版 B，也可把有网机器上装好的整个文件夹（含 `.venv`）拷过来。
+启动脚本会先找同目录的 `.venv`，再找系统 Python（需已装依赖）。都没有时：双击 **`安装依赖.cmd`**（联网一次，自动创建 `.venv`）；也可以把有网机器上装好的整个文件夹（含 `.venv`）拷过来。
 
 ## 10. 发行版（Releases）
 
-不想自己配环境？[Releases](https://github.com/Simlalsy/audiosr-4gb-webui/releases) 提供两个打包好的 ZIP，**源码完全相同，只是权重获取方式不同**：
+不想自己配环境？[Releases](https://github.com/Simlalsy/audiosr-4gb-webui/releases) 提供打包好的 Windows 包（解压即用）：
 
-| 包               | 适用场景                          | 差异                                                                                                       |
-| ---------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `A-自动下载模型` | 有网络、图省事                    | 首次运行自动从 Hugging Face 镜像下载 `pytorch_model.bin`（约 5.75 GB，缓存到用户目录）                     |
-| `B-完全离线`     | 内网 / 离线机器，或想自己管理权重 | 启动脚本内置 `AUDIOSR_OFFLINE=1`，**绝不联网下载**；模型以分卷形式随 Releases 提供，首次启动自动合并并校验 |
+| 包 | 说明 |
+| --- | --- |
+| `AudioSR-LowVRAM-v1.1.0-A-online-model-download.zip` | 首次运行自动从 Hugging Face 镜像下载 `pytorch_model.bin`（约 5.75 GB，缓存到用户目录）；程序目录已有完整模型时不会下载 |
 
-两个包用法相同：解压 → 双击 **`安装依赖.cmd`**（联网一次，自动建 `.venv`）→ 双击 `双击启动网页界面.cmd`。
-A 版首次启动会自动下载权重（如果目录里已有完整模型或分卷则不会下载）；B 版把 **`pytorch_model.bin.part-01…`** 分卷（见 Releases 附件）放到程序目录即可，首次启动自动合并 + SHA-256 校验。包内 `使用说明.txt` 有逐步说明。
+用法：解压 → 双击 **`安装依赖.cmd`**（联网一次，自动建 `.venv`）→ 双击 `双击启动网页界面.cmd`；首次启动自动下载权重（已放好完整模型则不会下载）。包内 `使用说明.txt` 有逐步说明。
 
-自己重新打包：在仓库根目录执行 `python release\build_release.py v1.1.0 --with-model`，产物（两个 ZIP + 模型分卷）在 `dist\`，发布文案在 `release\发布说明_v1.1.0.md`。
+想**完全离线**运行：把 `pytorch_model.bin` 放到程序目录（或 `models\`，或用 `AUDIOSR_CKPT` 指定），并在启动脚本里加一行 `set AUDIOSR_OFFLINE=1`。
 
-> **权重查找顺序**（两个版本通用）：`AUDIOSR_CKPT` → 程序目录 `pytorch_model.bin`（没有时先尝试合并 `*.part*` 分卷）→ `models\pytorch_model.bin` → 上一级目录 `pytorch_model.bin`；都没找到时才联网下载（A 版）或直接报错（B 版）。
+自己重新打包：在仓库根目录执行 `python release\build_release.py v1.1.0`（可选 `--with-offline` 生成完全离线版、`--with-model` 生成模型分卷），产物在 `dist\`，发布文案在 `release\发布说明_v1.1.0.md`。
+
+> **权重查找顺序**（两版本通用）：`AUDIOSR_CKPT` → 程序目录 `pytorch_model.bin`（没有时先尝试合并 `*.part*` 分卷）→ `models\pytorch_model.bin` → 上一级目录 `pytorch_model.bin`；都没找到时才联网下载（设了 `AUDIOSR_OFFLINE=1` 则直接报错）。
 
 ## 11. 许可与致谢
 
