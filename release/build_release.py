@@ -220,9 +220,12 @@ def main():
     variants = [ONLINE_VARIANT] + ([OFFLINE_VARIANT] if with_offline else [])
     os.makedirs(DIST_DIR, exist_ok=True)
 
-    dirty = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True
-    ).stdout.strip()
+    # note: decode explicitly as UTF-8 - `text=True` would use the ANSI code page
+    # and blow up on non-ASCII file names (e.g. Chinese)
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=ROOT, capture_output=True
+    )
+    dirty = status.stdout.decode("utf-8", "replace").strip()
     if dirty:
         print(f"[warn] 工作区有未提交改动，包内容来自 {ref}（已提交部分）")
 
