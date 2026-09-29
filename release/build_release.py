@@ -8,9 +8,12 @@
     引用     默认 HEAD（也可写 main 或某个 tag）
 
 产物（dist\\ 目录）：
-    AudioSR-LowVRAM-<版本>-A-自动下载模型.zip
-    AudioSR-LowVRAM-<版本>-B-完全离线.zip
+    AudioSR-LowVRAM-<版本>-A-online-model-download.zip
+    AudioSR-LowVRAM-<版本>-B-fully-offline.zip
     release_body.md   发布说明（含两个包的 SHA-256），供 `gh release create --notes-file` 使用
+
+ZIP 内部的顶层文件夹与 使用说明.txt 仍是中文（Windows 资源管理器可正常解压），
+只有对外的文件名用 ASCII —— 部分工具链会把非 ASCII 文件名丢掉。
 
 两个包的源码完全相同（来自 `git archive`，并排除 release\\ 与 dist\\），差异只有两处：
     1. 包内根目录的 使用说明.txt 分别为 A / B 版；
@@ -37,8 +40,18 @@ CMD_FILES = (
     "双击选择音频处理.cmd",
 )
 VARIANTS = (
-    {"tag": "A-自动下载模型", "doc": "使用说明_自动下载模型版.txt", "offline": False},
-    {"tag": "B-完全离线", "doc": "使用说明_完全本地版.txt", "offline": True},
+    {
+        "tag": "A-自动下载模型",
+        "slug": "A-online-model-download",
+        "doc": "使用说明_自动下载模型版.txt",
+        "offline": False,
+    },
+    {
+        "tag": "B-完全离线",
+        "slug": "B-fully-offline",
+        "doc": "使用说明_完全本地版.txt",
+        "offline": True,
+    },
 )
 
 
@@ -187,15 +200,18 @@ def main():
             payload = b"\xef\xbb\xbf" + doc.replace("\n", "\r\n").encode("utf-8")
             open(os.path.join(work, "使用说明.txt"), "wb").write(payload)
 
-            out_zip = os.path.join(DIST_DIR, pkg_name + ".zip")
+            # ZIP 内部用中文文件夹名（Windows 资源管理器能正确解压），
+            # 对外文件名用 ASCII，避开部分工具链对非 ASCII 文件名的丢失问题。
+            asset_name = f"AudioSR-LowVRAM-{version}-{variant['slug']}.zip"
+            out_zip = os.path.join(DIST_DIR, asset_name)
             build_zip(work, out_zip, pkg_name)
             entries = verify_zip(out_zip, variant["offline"])
             size_mb = os.path.getsize(out_zip) / 2 ** 20
             digest = sha256(out_zip)
-            results.append((pkg_name + ".zip", size_mb, digest))
+            results.append((asset_name, size_mb, digest))
             print(
-                f"[ok] {pkg_name}.zip  {size_mb:.1f} MB  {entries} 个文件  "
-                f"sha256={digest}"
+                f"[ok] {asset_name}  {size_mb:.1f} MB  {entries} 个文件  "
+                f"（包内目录：{pkg_name}）  sha256={digest}"
             )
 
         body_src = os.path.join(RELEASE_DIR, f"发布说明_{version}.md")
