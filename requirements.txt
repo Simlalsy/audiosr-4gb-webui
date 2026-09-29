@@ -1,5 +1,10 @@
 --extra-index-url https://download.pytorch.org/whl/cu118
-git+https://github.com/huggingface/diffusers.git
+# NOTE (this fork): the upstream line `git+https://github.com/huggingface/diffusers.git`
+# has been commented out on purpose.
+#   * nothing in this repository imports `diffusers` (verified), so it is not needed;
+#   * cloning from GitHub inside pip often fails in CN networks
+#     ("Recv failure: Connection was reset"), which aborted the whole install.
+# git+https://github.com/huggingface/diffusers.git
 torch==2.0.1+cu118; sys_platform != 'darwin'
 torch==2.0.1; sys_platform == 'darwin'
 torchvision==0.15.2+cu118; sys_platform != 'darwin'

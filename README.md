@@ -67,22 +67,25 @@
 
 **实测环境**：Windows 11 + NVIDIA RTX 3050 Laptop 4 GB + Python 3.10.1 + PyTorch 2.0.1+cu118 / torchaudio 2.0.2+cu118。
 
-- Python 3.9~3.10 建议；纯 CPU 也能跑（`--device cpu`，只是慢很多）。
+- **Python 3.9 / 3.10 / 3.11（推荐 3.10）**：`torch==2.0.1+cu118` 没有 3.12+ 的安装包，用 3.12/3.13/3.15 会报 `Could not find a version that satisfies the requirement torch==2.0.1+cu118`。纯 CPU 也能跑（`--device cpu`，只是慢很多）。
 - **`ffmpeg` / `ffprobe` 必需**：上游的保存流程（`audiosr/utils.py` 的 `save_wave → strip_silence`）会调用它们把输出裁剪到原音频时长；处理 `m4a/aac/wma` 等输入或导出 mp3/flac/m4a/ogg 也靠它。Windows 可 `winget install Gyan.FFmpeg`，并确保 `ffmpeg`、`ffprobe` 在 `PATH` 中。
 - 模型权重查找顺序（见 `run_lowvram.py` 的 `default_ckpt_path()`）：
   1. 环境变量 `AUDIOSR_CKPT`；
-  2. **本仓库上一级目录**下的 `pytorch_model.bin`；
-  3. 都没有时，自动从 Hugging Face 下载（`haoheliu/audiosr_basic` / `haoheliu/audiosr_speech`）。
+  2. 程序目录 `pytorch_model.bin`（没有时先尝试合并 `pytorch_model.bin.part*` 分卷）；
+  3. `models\pytorch_model.bin`；
+  4. 上一级目录的 `pytorch_model.bin`；
+  5. 都没有时，自动从 Hugging Face 下载（`haoheliu/audiosr_basic` / `haoheliu/audiosr_speech`）。
      国内网络会自动走镜像 `HF_ENDPOINT=https://hf-mirror.com`（脚本已内置），并设置 `NO_PROXY=*` 绕过系统代理。
 
-安装依赖：
+安装依赖（推荐双击 **`安装依赖.cmd`**，会自动选兼容的 Python 并创建 `.venv`）：
 
 ```shell
 python -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-> 所有 `.cmd` 脚本都使用仓库内的 `.venv\Scripts\python.exe` 并自动 `cd` 到仓库根目录；直接用 `python run_lowvram.py` 时也请在仓库根目录执行（脚本依赖同目录的本地 `audiosr/` 包）。
+> 安装**不需要访问 GitHub**：上游 `requirements.txt` 里那条 `git+…/diffusers.git` 已注释（本项目没有代码用到它）。
+> 所有 `.cmd` 脚本会自动寻找 `.venv`，其次是兼容的系统 Python（3.9~3.11）；直接用 `python run_lowvram.py` 时请在仓库根目录执行（脚本依赖同目录的本地 `audiosr/` 包）。
 
 ## 4. 四种使用方式
 
@@ -227,19 +230,25 @@ python run_lowvram.py -i clip.wav --out_sr 48000 --stereo split
 **Q：双击 .cmd 提示找不到 Python 环境？**
 启动脚本会先找同目录的 `.venv`，再找系统 Python（需已装依赖）。都没有时：双击 **`安装依赖.cmd`**（联网一次，自动创建 `.venv`）；也可以把有网机器上装好的整个文件夹（含 `.venv`）拷过来。
 
+**Q：安装依赖报 `Could not find a version that satisfies the requirement torch==2.0.1+cu118`？**
+你的 Python 是 3.12 或更高（该版 torch 没有对应安装包）。安装 Python 3.10 后重跑 `安装依赖.cmd`，或 `set AUDIOSR_PY_BASE=D:\Python310\python.exe` 指定已有解释器。
+
+**Q：安装依赖卡在 `git clone … huggingface/diffusers` 报 `Recv failure: Connection was reset`？**
+这是国内访问 GitHub 被重置。该依赖本项目并未用到，已在 `requirements.txt` 中注释掉；用最新版包的 `安装依赖.cmd` 即可正常安装。
+
 ## 10. 发行版（Releases）
 
 不想自己配环境？[Releases](https://github.com/Simlalsy/audiosr-4gb-webui/releases) 提供打包好的 Windows 包（解压即用）：
 
 | 包                                                   | 说明                                                                                                                   |
 | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `AudioSR-LowVRAM-v1.1.0-A-online-model-download.zip` | 首次运行自动从 Hugging Face 镜像下载 `pytorch_model.bin`（约 5.75 GB，缓存到用户目录）；程序目录已有完整模型时不会下载 |
+| `AudioSR-LowVRAM-v1.1.2-A-online-model-download.zip` | 首次运行自动从 Hugging Face 镜像下载 `pytorch_model.bin`（约 5.75 GB，缓存到用户目录）；程序目录已有完整模型时不会下载 |
 
 用法：解压 → 双击 **`安装依赖.cmd`**（联网一次，自动建 `.venv`）→ 双击 `双击启动网页界面.cmd`；首次启动自动下载权重（已放好完整模型则不会下载）。包内 `使用说明.txt` 有逐步说明。
 
 想**完全离线**运行：把 `pytorch_model.bin` 放到程序目录（或 `models\`，或用 `AUDIOSR_CKPT` 指定），并在启动脚本里加一行 `set AUDIOSR_OFFLINE=1`。
 
-自己重新打包：在仓库根目录执行 `python release\build_release.py v1.1.0`（可选 `--with-offline` 生成完全离线版、`--with-model` 生成模型分卷），产物在 `dist\`，发布文案在 `release\发布说明_v1.1.0.md`。
+自己重新打包：在仓库根目录执行 `python release\build_release.py v1.1.2`（可选 `--with-offline` 生成完全离线版、`--with-model` 生成模型分卷），产物在 `dist\`，发布文案在 `release\发布说明_v1.1.2.md`。
 
 > **权重查找顺序**（两版本通用）：`AUDIOSR_CKPT` → 程序目录 `pytorch_model.bin`（没有时先尝试合并 `*.part*` 分卷）→ `models\pytorch_model.bin` → 上一级目录 `pytorch_model.bin`；都没找到时才联网下载（设了 `AUDIOSR_OFFLINE=1` 则直接报错）。
 

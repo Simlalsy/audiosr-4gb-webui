@@ -13,6 +13,7 @@ if exist "%~dp0.venv\Scripts\python.exe" (
   rmdir /s /q "%~dp0.venv"
 )
 echo Using base interpreter: %PY_BASE%
+echo [INFO] GitHub is not required: the unused diffusers git dependency is skipped.
 "%PY_BASE%" -m venv "%~dp0.venv"
 if errorlevel 1 goto fail
 "%~dp0.venv\Scripts\python.exe" -m pip install --upgrade pip
