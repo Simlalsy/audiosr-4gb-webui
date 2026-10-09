@@ -266,13 +266,13 @@ python run_lowvram.py -i clip.wav --out_sr 48000 --stereo split
 
 | 包                                                   | 说明                                                                                                                                            |
 | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AudioSR-LowVRAM-v1.1.4-A-online-model-download.zip` | 首次运行自动从 Hugging Face 镜像下载 `pytorch_model.bin`（约 5.75 GB，保存到**程序目录** `models\`，不占 C 盘）；程序目录已有完整模型时不会下载 |
+| `AudioSR-LowVRAM-v1.1.5-A-online-model-download.zip` | 首次运行自动从 Hugging Face 镜像下载 `pytorch_model.bin`（约 5.75 GB，保存到**程序目录** `models\`，不占 C 盘）；程序目录已有完整模型时不会下载。v1.1.5 起网页界面带实时进度条与「强制停止」，并新增输入带宽 / 多频段融合 / LUFS 响度匹配 / 高频空气感（合成）等可选开关 |
 
 用法：解压 → 双击 **`安装依赖.cmd`**（联网一次，自动建 `.venv`）→ 双击 `双击启动网页界面.cmd`；首次启动自动下载权重（已放好完整模型则不会下载）。包内 `使用说明.txt` 有逐步说明。
 
 想**完全离线**运行：把 `pytorch_model.bin` 放到程序目录（或 `models\`，或用 `AUDIOSR_CKPT` 指定），并在启动脚本里加一行 `set AUDIOSR_OFFLINE=1`。
 
-自己重新打包：在仓库根目录执行 `python release\build_release.py v1.1.4`（可选 `--with-offline` 生成完全离线版、`--with-model` 生成模型分卷），产物在 `dist\`，发布文案在 `release\发布说明_v1.1.4.md`。
+自己重新打包：在仓库根目录执行 `python release\build_release.py v1.1.5`（可选 `--with-offline` 生成完全离线版、`--with-model` 生成模型分卷），产物在 `dist\`，发布文案在 `release\发布说明_v1.1.5.md`。
 
 > **权重查找顺序**（两版本通用）：`AUDIOSR_CKPT` → 程序目录 `pytorch_model.bin`（没有时先尝试合并 `*.part*` 分卷）→ `models\pytorch_model.bin` → 上一级目录 `pytorch_model.bin`；都没找到时才联网下载（设了 `AUDIOSR_OFFLINE=1` 则直接报错）。
 
