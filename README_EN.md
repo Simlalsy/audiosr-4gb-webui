@@ -3,7 +3,7 @@
 > ### 🎚️ 社区修改版 · Community fork notice
 >
 > **This repository is a modified version of [AudioSR](https://github.com/haoheliu/versatile_audio_super_resolution) by Haohe Liu et al. (MIT License).**
-> It keeps the upstream code untouched and adds a **4 GB-VRAM inference path**, a **local Web UI (LAN capable)** and **double-click Windows launchers**.
+> It keeps the upstream code untouched and adds a **4 GB-VRAM inference path**, a **local Web UI (LAN capable, with a live progress bar and a force-stop button)** and **double-click Windows launchers**, plus optional switches: **input band-limiting, multiband ensemble, LUFS loudness matching** and a **synthesised >24 kHz top band** for 96/192 kHz exports (generated content, not recovered detail).
 > 👉 Chinese documentation (rendered on the repository front page): **[README.md](README.md)** · provenance details: **[NOTICE](NOTICE)**
 > 📄 This file keeps the upstream English README; the fork's additions are documented in Chinese in `README.md`.
 > 📦 Prebuilt Windows packages (online / fully-offline variants): see [Releases](https://github.com/Simlalsy/audiosr-4gb-webui/releases).
