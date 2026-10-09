@@ -20,3 +20,8 @@ librosa
 matplotlib
 audiosr
 unidecode
+# LUFS loudness matching (--loudness_match, ported from AudioSR-Colab-Fork v0.5)
+pyloudnorm
+# Optional high-quality resampling backend for librosa (avoids the audible
+# images/aliasing of torchaudio's default short sinc in high-rate exports)
+soxr

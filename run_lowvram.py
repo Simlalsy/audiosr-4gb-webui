@@ -40,6 +40,7 @@ import hashlib
 import os
 import shutil
 import sys
+import threading
 import time
 import types
 
@@ -410,6 +411,15 @@ def build_lowvram_model(model_name="basic", device="cuda:0", ckpt_path=None, gpu
             torch.cuda.empty_cache()
 
         # -- 2) DDIM sampling on GPU (this is the heavy part) --------------
+        # `sample_log` forwards **kwargs to DDIMSampler.sample(), which already
+        # calls `callback(i)` after every step - that is our progress/cancel
+        # checkpoint (one call per chunk, so chunk counting stays exact).
+        _progress_enter_chunk()
+        step_callback = (
+            None
+            if use_plms
+            else (lambda i, _n=int(ddim_steps): _progress_step(i, _n))
+        )
         t0 = time.time()
         samples, _ = self.sample_log(
             cond=c,
@@ -421,6 +431,7 @@ def build_lowvram_model(model_name="basic", device="cuda:0", ckpt_path=None, gpu
             unconditional_guidance_scale=unconditional_guidance_scale,
             unconditional_conditioning=uncond,
             use_plms=use_plms,
+            callback=step_callback,
         )
         if torch.cuda.is_available():
             torch.cuda.synchronize()
@@ -550,49 +561,494 @@ def _split_stereo(path, out_dir):
     return paths
 
 
-def _process_file(
-    ld, path, ddim_steps, seed, guidance_scale, chunk_duration_s,
-    overlap_duration_s, chunking="auto",
-):
-    """Run AudioSR on ONE mono file; returns a (1, 1, T) tensor."""
-    import torchaudio
+# ---------------------------------------------------------------------------
+# Progress reporting + cancellation (the CLI ignores both; the Web UI uses them)
+#
+# `generate_batch` runs exactly once per processed chunk - single pass, library
+# chunking, fork chunking and each stereo channel included - so the pipeline
+# reports progress in *chunks* and refines it with the DDIM step callback the
+# sampler already supports (`DDIMSampler.sample(callback=...)`). The same
+# callback is the cancellation checkpoint, which makes "stop" react within one
+# DDIM step instead of only between chunks.
+# ---------------------------------------------------------------------------
+PROGRESS_SR = 48000
 
+
+class JobCancelled(Exception):
+    """Raised inside the pipeline when a stop was requested (Web UI 停止)."""
+
+
+_progress_hook = None
+_cancel_event = threading.Event()
+_prog = {"total": 0, "chunk": 0, "step": 0.0, "step_i": 0, "steps": 0, "label": ""}
+
+
+def set_progress_hook(hook):
+    """Install `hook(fraction, text)` (or None) receiving 0..1 progress."""
+    global _progress_hook
+    _progress_hook = hook
+
+
+def request_cancel():
+    """Ask the running pipeline to stop at its next checkpoint."""
+    _cancel_event.set()
+
+
+def clear_cancel():
+    _cancel_event.clear()
+    _progress_reset()
+
+
+def _progress_reset():
+    _prog.update(total=0, chunk=0, step=0.0, step_i=0, steps=0, label="")
+
+
+def cancel_requested():
+    return _cancel_event.is_set()
+
+
+def check_cancel():
+    if _cancel_event.is_set():
+        raise JobCancelled("已请求停止")
+
+
+def _progress_text():
+    """Short "what is happening now" string, e.g. `声道 1/2 · 块 3/8 · 采样 12/50`."""
+    parts = []
+    if _prog["label"]:
+        parts.append(_prog["label"])
+    if _prog["total"] > 1:
+        parts.append(f"块 {min(max(_prog['chunk'], 1), _prog['total'])}/{_prog['total']}")
+    if _prog["steps"] > 1:
+        parts.append(f"采样 {min(max(_prog['step_i'], 1), _prog['steps'])}/{_prog['steps']}")
+    return " · ".join(parts)
+
+
+def _progress_report():
+    hook = _progress_hook
+    if hook is None or _prog["total"] <= 0:
+        return
+    done = (_prog["chunk"] - 1 + _prog["step"]) / _prog["total"]
     try:
+        hook(min(1.0, max(0.0, done)), _progress_text())
+    except Exception:  # a broken hook must never kill a job
+        pass
+
+
+def _progress_start(total_chunks, label=""):
+    _progress_reset()
+    _prog.update(total=max(int(total_chunks), 0), label=label)
+    _progress_report()
+
+
+def _progress_set_label(label):
+    if label != _prog["label"]:
+        _prog["label"] = label
+        _progress_report()
+
+
+def _progress_enter_chunk():
+    """Called once per chunk, right before its DDIM loop starts."""
+    check_cancel()
+    _prog["chunk"] += 1
+    _prog.update(step=0.0, step_i=0, steps=0)
+    _progress_report()
+
+
+def _progress_step(index, steps):
+    """DDIM step callback: `index` is the 0-based index of the finished step."""
+    check_cancel()
+    steps = max(int(steps), 1)
+    _prog["steps"] = steps
+    _prog["step_i"] = int(index) + 1
+    _prog["step"] = min(1.0, _prog["step_i"] / steps)
+    _progress_report()
+
+
+def _audio_duration(path):
+    try:
+        import torchaudio
+
         info = torchaudio.info(path)
-        duration = info.num_frames / info.sample_rate
+        return info.num_frames / info.sample_rate
     except Exception:
-        duration = None
+        return None
+
+
+def _chunk_geometry(chunk_duration_s, overlap_duration_s, sr=PROGRESS_SR):
+    chunk_samples = max(int(chunk_duration_s * sr), sr // 4)
+    overlap_samples = int(min(max(overlap_duration_s, 0), chunk_duration_s - 0.1) * sr)
+    if overlap_samples >= chunk_samples:
+        overlap_samples = 0
+    return chunk_samples, overlap_samples
+
+
+def _chunk_count(total_samples, chunk_duration_s, overlap_duration_s, fork_style=False):
+    """How many chunks a file of `total_samples` will be split into."""
+    chunk_samples = max(int(chunk_duration_s * PROGRESS_SR), 1)
+    if not fork_style:
+        # audiosr.super_resolution_long_audio: range(0, total, chunk - overlap)
+        step = chunk_samples - int(overlap_duration_s * PROGRESS_SR)
+        return 1 if step <= 0 else max(1, int(np.ceil(total_samples / step)))
+    _, overlap_samples = _chunk_geometry(chunk_duration_s, overlap_duration_s)
+    step = chunk_samples - overlap_samples
+    if total_samples <= chunk_samples:
+        return 1
+    return 1 + int(np.ceil((total_samples - chunk_samples) / step))
+
+
+def _planned_chunks(path, chunking, chunk_duration_s, overlap_duration_s, fork_style=False):
+    duration = _audio_duration(path)
     if chunking is None:
         chunking = "auto"
     if chunking == "auto":
         use_chunk = duration is not None and duration > 12
     else:
         use_chunk = bool(chunking)
-    if use_chunk:
-        dur_txt = f"{duration:.1f}s" if duration is not None else "long"
-        print(
-            f"[lowvram] {os.path.basename(path)}: {dur_txt} -> "
-            f"chunked mode ({chunk_duration_s}s / {overlap_duration_s}s overlap)"
-        )
-        wav = super_resolution_long_audio(
-            ld, path, seed=seed, guidance_scale=guidance_scale,
-            ddim_steps=ddim_steps, chunk_duration_s=chunk_duration_s,
-            overlap_duration_s=overlap_duration_s,
-        )
-    else:
-        wav = super_resolution(
-            ld, path, seed=seed, guidance_scale=guidance_scale,
-            ddim_steps=ddim_steps, latent_t_per_second=12.8,
-        )
-    if isinstance(wav, np.ndarray):
-        wav = torch.from_numpy(wav)
-    return wav
+    if not use_chunk or duration is None:
+        return 1
+    return _chunk_count(
+        int(round(duration * PROGRESS_SR)), chunk_duration_s, overlap_duration_s, fork_style
+    )
+
+
+# ---------------------------------------------------------------------------
+# Optional synthetic top band ("exciter")
+#
+# AudioSR cannot put anything above 24 kHz (48 kHz mel + 48 kHz vocoder), so a
+# 96/192 kHz export is silent up there. This post-process squares the top
+# octave of the output, which folds *synthesised* 2nd-order harmonics into
+# 24-43 kHz and makes the high-rate file sound "open". It is NOT recovered
+# detail - it is generated content, mixed far below the original level - and it
+# is only applied when out_sr > 48000.
+# ---------------------------------------------------------------------------
+AIR_LEVELS = {"off": 0.0, "light": 0.03, "medium": 0.06, "strong": 0.12}
+
+
+def _biquad(audio, cutoff, btype, sr, order=4):
+    from scipy import signal as _sig
+
+    nyquist = 0.5 * sr
+    wn = float(min(max(cutoff, 1.0), nyquist - 1.0)) / nyquist
+    sos = _sig.butter(order, wn, btype=btype, output="sos")
+    return _sig.sosfiltfilt(sos, audio)
+
+
+def _synthetic_air(audio, sr, amount=0.06):
+    """Mix synthesised harmonics above 24 kHz into a 1-D float signal.
+
+    2nd-order harmonics of the 12-24 kHz octave land in 24-48 kHz, so squaring
+    that band fills the top of a high-rate export without aliasing (a 3rd-order
+    term would alias, hence 2nd order only). The source octave is extracted with
+    a steep filter and gated on its level, so material that is band-limited
+    below ~12 kHz is returned completely untouched.
+    """
+    if amount <= 0 or sr <= 48000 or len(audio) < 4096:
+        return audio  # true no-op - the caller's array/dtype is untouched
+    audio = np.asarray(audio, dtype=np.float32)
+    top = min(24000.0, 0.45 * sr)
+    source = _biquad(
+        _biquad(audio, 12000.0, "highpass", sr, order=8), top, "lowpass", sr, order=8
+    )
+    ref = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2))) + 1e-12
+    src = float(np.sqrt(np.mean(source.astype(np.float64) ** 2))) + 1e-12
+    if src < 0.002 * ref:  # top octave is ~54 dB down: nothing worth exciting
+        return audio
+    harm = _biquad(
+        _biquad(source.astype(np.float64) ** 2, 24500.0, "highpass", sr),
+        min(46000.0, 0.45 * sr),
+        "lowpass",
+        sr,
+    )
+    cur = float(np.sqrt(np.mean(harm ** 2))) + 1e-12
+    mixed = audio.astype(np.float64) + harm / cur * ref * float(amount)
+    peak = float(np.max(np.abs(mixed))) + 1e-12
+    if peak > 0.99:
+        mixed = mixed * (0.99 / peak)
+    return mixed.astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# jarredou AudioSR-Colab-Fork DSP port
+# (https://github.com/brahianrosswill/AudioSR-Colab-Fork - the same processing
+# that ships in that fork's inference.py, wired into the low-VRAM pipeline):
+#   * input_cutoff        band-limit the model input by resampling it to
+#                         cutoff*2 Hz instead of low-pass filtering it (v0.5);
+#   * multiband_ensemble  keep the original audio below `cutoff - 1000` Hz and
+#                         mix in the generated audio above it (v0.3);
+#   * loudness_match      match every processed chunk to the integrated
+#                         loudness (LUFS) of its input chunk instead of its
+#                         peak, which removes the volume jumps between chunks
+#                         (v0.5). Needs `pyloudnorm`; without it the previous
+#                         peak matching is used.
+# ---------------------------------------------------------------------------
+FORK_DEFAULT_CUTOFF = 14000
+
+
+def _fork_cutoff(input_cutoff):
+    """Normalise the cutoff argument: 0/None/bogus -> 0 (feature disabled)."""
+    try:
+        cutoff = int(input_cutoff)
+    except (TypeError, ValueError):
+        return 0
+    return cutoff if cutoff > 2000 else 0
+
+
+def _match_len(audio, length):
+    audio = np.asarray(audio, dtype=np.float32)
+    if len(audio) > length:
+        return audio[:length]
+    if len(audio) < length:
+        return np.pad(audio, (0, length - len(audio)))
+    return audio
+
+
+def _load_mono(path, sr=48000):
+    """Read the first channel of `path` and resample it to `sr`."""
+    import soundfile as sf
+
+    data, file_sr = sf.read(path, dtype="float32", always_2d=True)
+    audio = np.ascontiguousarray(data[:, 0], dtype=np.float32)
+    if file_sr != sr:
+        audio = _resample(audio, file_sr, sr)
+    return audio
+
+
+def _resample(audio, orig_sr, target_sr):
+    """High-quality sample-rate conversion (time on the LAST axis).
+
+    `torchaudio.functional.resample` uses a short Hann-windowed sinc: just above
+    its cutoff the stop-band is only ~-15 dB, so a 48 -> 96 kHz export folded
+    audible images of the 21-24 kHz band into 24-27 kHz (and downsampling folded
+    ~-70 dB of aliasing back into the passband). librosa/soxr reject both by
+    100+ dB; `soxr` is used when installed, otherwise librosa's own filter.
+    """
+    if int(orig_sr) == int(target_sr):
+        return audio
+    import librosa
+
+    res_type = "kaiser_best"
+    try:
+        import soxr  # noqa: F401  - enables librosa's faster soxr_* presets
+
+        res_type = "soxr_hq"
+    except Exception:
+        pass
+    return librosa.resample(
+        np.asarray(audio, dtype=np.float32),
+        orig_sr=int(orig_sr),
+        target_sr=int(target_sr),
+        res_type=res_type,
+    )
+
+
+def _lr_filter(audio, cutoff, btype, order=10, sr=48000):
+    """Zero-phase Butterworth filter; same filter the fork's `lr_filter` uses."""
+    from scipy import signal as _sig
+
+    nyquist = 0.5 * sr
+    cutoff = float(min(max(cutoff, 1.0), nyquist - 1.0))
+    sos = _sig.butter(order // 2, cutoff / nyquist, btype=btype, output="sos")
+    return _sig.sosfiltfilt(sos, audio).astype(np.float32)
+
+
+def _band_limit(path, cutoff, tmp_dir):
+    """Write a copy of `path` resampled to `cutoff * 2` Hz (fork v0.5)."""
+    import soundfile as sf
+
+    target_sr = int(cutoff) * 2
+    audio = _load_mono(path, sr=target_sr)
+    out_path = os.path.join(
+        tmp_dir, f"{os.path.splitext(os.path.basename(path))[0]}.cutoff{cutoff}.wav"
+    )
+    sf.write(out_path, audio, target_sr, subtype="FLOAT")
+    return out_path
+
+
+def _multiband_ensemble(original, generated, cutoff, sr=48000):
+    """Original audio below the crossover + generated audio above it (fork v0.3)."""
+    if len(original) < 512 or len(generated) < 512:
+        return _match_len(generated, len(original))
+    crossover = min(cutoff - 1000, sr // 2 - 500)
+    n = len(original)
+    low = _lr_filter(_match_len(original, n), crossover, "lowpass", order=10, sr=sr)
+    high = _lr_filter(_match_len(generated, n), crossover, "highpass", order=10, sr=sr)
+    high = _lr_filter(high, min(23000, sr // 2 - 500), "lowpass", order=2, sr=sr)
+    return (low + high).astype(np.float32)
+
+
+def _loudness_match(reference, target, sr=48000):
+    """Scale `target` to the integrated loudness (LUFS) of `reference`.
+
+    Falls back to peak matching when pyloudnorm is unavailable or the block is
+    shorter than its 400 ms loudness window (the fork has no such guard and
+    crashes on very short chunks).
+    """
+    reference = np.asarray(reference, dtype=np.float32)
+    target = np.asarray(target, dtype=np.float32)
+    try:
+        import pyloudnorm as pyln
+
+        meter = pyln.Meter(sr)
+        ref_lufs = meter.integrated_loudness(reference.astype(np.float64))
+        tgt_lufs = meter.integrated_loudness(target.astype(np.float64))
+        if not (np.isfinite(ref_lufs) and np.isfinite(tgt_lufs)):
+            raise ValueError("non-finite integrated loudness")
+        return pyln.normalize.loudness(
+            target.astype(np.float64), tgt_lufs, ref_lufs
+        ).astype(np.float32)
+    except Exception:
+        ref_peak = float(np.max(np.abs(reference))) + 1e-8
+        tgt_peak = float(np.max(np.abs(target))) + 1e-8
+        return (target / tgt_peak * ref_peak).astype(np.float32)
+
+
+def _chunked_sr_loudness_matched(
+    ld, path, ddim_steps, seed, guidance_scale, chunk_duration_s,
+    overlap_duration_s, sr=48000,
+):
+    """Fork-style chunk loop: per-chunk LUFS matching + linear cross-fades.
+
+    Same chunk/overlap geometry as `audiosr.super_resolution_long_audio`, but
+    every generated chunk is matched to the loudness of the input chunk it came
+    from instead of being peak-normalised (fork v0.5). The linear fade in/out
+    ramps sum to 1, so the overlapping regions need no extra normalisation.
+    """
+    import soundfile as sf
+    import tempfile
+
+    audio = _load_mono(path, sr=sr)
+    chunk_samples, overlap_samples = _chunk_geometry(chunk_duration_s, overlap_duration_s, sr)
+    step = chunk_samples - overlap_samples
+    n_chunks = _chunk_count(len(audio), chunk_duration_s, overlap_duration_s, fork_style=True)
+    # every chunk is trimmed to its unpadded length, so the overlap-add output
+    # is exactly as long as the input (no silent tail from the last padding)
+    out = np.zeros(len(audio), dtype=np.float32)
+
+    fade_in = fade_out = None
+    if overlap_samples:
+        fade_in = np.linspace(0.0, 1.0, overlap_samples, dtype=np.float32)
+        fade_out = fade_in[::-1].copy()
+
+    tmp_dir = tempfile.mkdtemp(prefix="audiosr_chunk_")
+    try:
+        for i in range(n_chunks):
+            start = i * step
+            chunk = audio[start:start + chunk_samples]
+            if not len(chunk):
+                break
+            original_length = len(chunk)
+            chunk_path = os.path.join(tmp_dir, f"chunk{i}.wav")
+            sf.write(chunk_path, _match_len(chunk, chunk_samples), sr, subtype="FLOAT")
+            generated = super_resolution(
+                ld, chunk_path, seed=seed, guidance_scale=guidance_scale,
+                ddim_steps=ddim_steps, latent_t_per_second=12.8,
+            )
+            if isinstance(generated, np.ndarray):
+                generated = torch.from_numpy(generated)
+            generated = (
+                generated.detach().cpu().float().numpy().reshape(-1)[:original_length]
+            )
+            generated = _loudness_match(chunk[:original_length], generated, sr=sr)
+            if fade_in is not None:
+                n_fade = min(overlap_samples, len(generated))
+                if i > 0:
+                    generated[:n_fade] *= fade_in[:n_fade]
+                if i < n_chunks - 1:
+                    generated[-n_fade:] *= fade_out[-n_fade:]
+            end = min(start + len(generated), len(out))
+            out[start:end] += generated[: end - start]
+            print(
+                f"[lowvram] chunk {i + 1}/{n_chunks} "
+                f"(LUFS matched, {original_length / sr:.2f}s)"
+            )
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+    return torch.from_numpy(out).unsqueeze(0)
+
+
+def _process_file(
+    ld, path, ddim_steps, seed, guidance_scale, chunk_duration_s,
+    overlap_duration_s, chunking="auto", input_cutoff=0,
+    multiband_ensemble=False, loudness_match=False, label="",
+):
+    """Run AudioSR on ONE mono file; returns a (1, T) tensor."""
+    import tempfile
+
+    import torchaudio
+
+    check_cancel()
+    _progress_set_label(label)
+
+    cutoff = _fork_cutoff(input_cutoff)
+    if multiband_ensemble and not cutoff:
+        cutoff = FORK_DEFAULT_CUTOFF
+
+    tmp_dir = None
+    model_path = path
+    if cutoff:
+        tmp_dir = tempfile.mkdtemp(prefix="audiosr_cutoff_")
+        model_path = _band_limit(path, cutoff, tmp_dir)
+        print(f"[lowvram] input band-limited to {cutoff} Hz (fork input_cutoff)")
+
+    try:
+        try:
+            info = torchaudio.info(model_path)
+            duration = info.num_frames / info.sample_rate
+        except Exception:
+            duration = None
+        if chunking is None:
+            chunking = "auto"
+        if chunking == "auto":
+            use_chunk = duration is not None and duration > 12
+        else:
+            use_chunk = bool(chunking)
+        if use_chunk:
+            dur_txt = f"{duration:.1f}s" if duration is not None else "long"
+            print(
+                f"[lowvram] {os.path.basename(model_path)}: {dur_txt} -> "
+                f"chunked mode ({chunk_duration_s}s / {overlap_duration_s}s overlap)"
+            )
+            if loudness_match:
+                wav = _chunked_sr_loudness_matched(
+                    ld, model_path, ddim_steps, seed, guidance_scale,
+                    chunk_duration_s, overlap_duration_s,
+                )
+            else:
+                wav = super_resolution_long_audio(
+                    ld, model_path, seed=seed, guidance_scale=guidance_scale,
+                    ddim_steps=ddim_steps, chunk_duration_s=chunk_duration_s,
+                    overlap_duration_s=overlap_duration_s,
+                )
+        else:
+            wav = super_resolution(
+                ld, model_path, seed=seed, guidance_scale=guidance_scale,
+                ddim_steps=ddim_steps, latent_t_per_second=12.8,
+            )
+        if isinstance(wav, np.ndarray):
+            wav = torch.from_numpy(wav)
+        wav = wav.detach().cpu().float().reshape(-1)
+        if loudness_match and not use_chunk:
+            reference = _load_mono(model_path)
+            n = min(len(wav), len(reference))
+            wav = torch.from_numpy(_loudness_match(reference[:n], wav[:n].numpy()))
+    finally:
+        if tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    if multiband_ensemble and cutoff:
+        mixed = _multiband_ensemble(_load_mono(path), wav.numpy(), cutoff)
+        wav = torch.from_numpy(mixed)
+        print(f"[lowvram] multiband ensemble @ {cutoff - 1000} Hz (fork v0.3)")
+
+    return wav.unsqueeze(0)
 
 
 def process_and_save(
     ld, in_path, out_dir, name, ddim_steps=50, seed=42, guidance_scale=3.5,
     chunking="auto", chunk_duration_s=10, overlap_duration_s=2, stereo_mode="split",
-    out_sr=48000, out_format="wav",
+    out_sr=48000, out_format="wav", input_cutoff=0, multiband_ensemble=False,
+    loudness_match=False, synthetic_air=0.0,
 ):
     """Full pipeline: optional stereo split -> per-channel AudioSR -> merge back.
 
@@ -602,6 +1058,13 @@ def process_and_save(
     sinc resample of that result (e.g. 44100 for CD, 16000 for speech models).
     out_format != "wav" converts the result with ffmpeg (mp3/flac/m4a/ogg);
     the wav master is always kept next to it.
+
+    The last three arguments are the AudioSR-Colab-Fork DSP options (all off by
+    default, i.e. the stock pipeline): `input_cutoff` band-limits the model
+    input (Hz, 0 = off), `multiband_ensemble` re-uses the original low band,
+    `loudness_match` matches each chunk to the input LUFS instead of its peak.
+    `synthetic_air` (0 = off) mixes synthesised harmonics above 24 kHz into a
+    >48 kHz export - generated content, not recovered detail.
     Returns the final output path.
     """
     import shutil as _shutil
@@ -612,18 +1075,30 @@ def process_and_save(
     out_sr = int(max(8000, min(192000, int(out_sr))))
     os.makedirs(out_dir, exist_ok=True)
 
-    if stereo_mode == "split" and is_stereo(in_path):
+    split_stereo = stereo_mode == "split" and is_stereo(in_path)
+    _progress_start(
+        (2 if split_stereo else 1)
+        * _planned_chunks(
+            in_path, chunking, chunk_duration_s, overlap_duration_s, bool(loudness_match)
+        )
+    )
+
+    if split_stereo:
         data_in, _sr_in = sf.read(in_path, dtype="float32", always_2d=True)
         in_peaks = [float(np.max(np.abs(data_in[:, i]))) + 1e-8 for i in range(2)]
         tmp = tempfile.mkdtemp(prefix="audiosr_st_")
         try:
             ch_paths = _split_stereo(in_path, tmp)
             outs = []
-            for ch in ch_paths:
+            for ci, ch in enumerate(ch_paths):
                 print(f"[lowvram] processing channel: {os.path.basename(ch)}")
                 w = _process_file(
                     ld, ch, ddim_steps, seed, guidance_scale,
                     chunk_duration_s, overlap_duration_s, chunking,
+                    input_cutoff=input_cutoff,
+                    multiband_ensemble=multiband_ensemble,
+                    loudness_match=loudness_match,
+                    label=f"声道 {ci + 1}/{len(ch_paths)}" if len(ch_paths) > 1 else "",
                 )
                 # the chunked library path returns (1, T) (batch dim squeezed),
                 # the single-pass path returns (1, 1, T); flatten both to 1-D
@@ -645,10 +1120,22 @@ def process_and_save(
         if peak > 0.99:
             stereo = stereo * (0.99 / peak)
         if out_sr != 48000:
-            import torchaudio
-
-            t = torch.from_numpy(np.ascontiguousarray(stereo.T))
-            stereo = torchaudio.functional.resample(t, 48000, out_sr).numpy().T
+            stereo = _resample(stereo.T, 48000, out_sr).T
+        if synthetic_air > 0:
+            if out_sr > 48000:
+                stereo = np.stack(
+                    [
+                        _synthetic_air(stereo[:, ch], out_sr, synthetic_air)
+                        for ch in range(stereo.shape[1])
+                    ],
+                    axis=1,
+                )
+                print(
+                    f"[lowvram] synthetic top band added (>24 kHz, amount "
+                    f"{synthetic_air:g}) - generated content"
+                )
+            else:
+                print("[lowvram] synthetic_air ignored: --out_sr must be > 48000")
         out_path = os.path.join(out_dir, name + ".wav")
         sf.write(out_path, stereo, out_sr, subtype="PCM_16")
         print(f"[lowvram] stereo merged -> {out_path} ({out_sr} Hz)")
@@ -657,11 +1144,24 @@ def process_and_save(
     wav = _process_file(
         ld, in_path, ddim_steps, seed, guidance_scale,
         chunk_duration_s, overlap_duration_s, chunking,
+        input_cutoff=input_cutoff,
+        multiband_ensemble=multiband_ensemble,
+        loudness_match=loudness_match,
     )
     if out_sr != 48000:
-        import torchaudio
-
-        wav = torchaudio.functional.resample(wav, 48000, out_sr)
+        wav = torch.from_numpy(
+            _resample(wav.detach().cpu().float().numpy(), 48000, out_sr)
+        )
+    if synthetic_air > 0:
+        if out_sr > 48000:
+            flat = wav.detach().cpu().float().numpy().reshape(-1)
+            wav = torch.from_numpy(_synthetic_air(flat, out_sr, synthetic_air)).unsqueeze(0)
+            print(
+                f"[lowvram] synthetic top band added (>24 kHz, amount "
+                f"{synthetic_air:g}) - generated content"
+            )
+        else:
+            print("[lowvram] synthetic_air ignored: --out_sr must be > 48000")
     save_wave(wav, inputpath=in_path, savepath=out_dir, name=name, samplerate=out_sr)
     return convert_output(os.path.join(out_dir, name + ".wav"), out_format)
 
@@ -689,9 +1189,38 @@ def main():
         default="wav",
         help="convert the output to this format with ffmpeg (the wav master is kept too)",
     )
+    ap.add_argument(
+        "--synthetic_air",
+        choices=list(AIR_LEVELS),
+        default="off",
+        help="add SYNTHESISED harmonics above 24 kHz so a 96/192 kHz export is not "
+        "empty up top (generated content, not recovered detail); only applies when "
+        "--out_sr > 48000",
+    )
     ap.add_argument("--chunking", action="store_true", help="chunk long audio")
     ap.add_argument("--chunk_duration", type=int, default=10)
     ap.add_argument("--overlap_duration", type=int, default=2)
+    ap.add_argument(
+        "--input_cutoff",
+        type=int,
+        default=0,
+        help="band-limit the model input to this frequency in Hz by resampling "
+        "it to input_cutoff*2 Hz instead of low-pass filtering it (AudioSR-Colab-Fork "
+        "v0.5); 0 = off, try 14000",
+    )
+    ap.add_argument(
+        "--multiband_ensemble",
+        action="store_true",
+        help="keep the original audio below (input_cutoff - 1000) Hz and mix in the "
+        "generated audio above it (AudioSR-Colab-Fork v0.3); implies --input_cutoff 14000",
+    )
+    ap.add_argument(
+        "--loudness_match",
+        action="store_true",
+        help="match every processed chunk to the integrated loudness (LUFS) of its "
+        "input chunk instead of its peak, removing chunk-to-chunk volume jumps "
+        "(AudioSR-Colab-Fork v0.5); needs pyloudnorm",
+    )
     ap.add_argument(
         "--device",
         default="cuda:0" if torch.cuda.is_available() else "cpu",
@@ -729,6 +1258,24 @@ def main():
     if args.stereo == "split" and is_stereo(src):
         print("[lowvram] stereo input detected -> per-channel processing (true stereo, ~2x time)")
 
+    if args.multiband_ensemble or args.input_cutoff:
+        cutoff = args.input_cutoff or FORK_DEFAULT_CUTOFF
+        print(
+            f"[lowvram] fork DSP on: input_cutoff={cutoff} Hz"
+            + (f", multiband ensemble @ {cutoff - 1000} Hz" if args.multiband_ensemble else "")
+            + (", LUFS loudness matching" if args.loudness_match else "")
+        )
+
+    if AIR_LEVELS[args.synthetic_air] > 0:
+        if args.out_sr > 48000:
+            print(
+                f"[lowvram] synthetic top band: {args.synthetic_air} "
+                f"({AIR_LEVELS[args.synthetic_air]:g}) - synthesised harmonics above "
+                "24 kHz, not recovered detail"
+            )
+        else:
+            print(f"[lowvram] --synthetic_air {args.synthetic_air} ignored: need --out_sr > 48000")
+
     t0 = time.time()
     out = process_and_save(
         ld, src, save_path, name,
@@ -741,6 +1288,10 @@ def main():
         stereo_mode=args.stereo,
         out_sr=args.out_sr,
         out_format=args.out_format,
+        input_cutoff=args.input_cutoff,
+        multiband_ensemble=args.multiband_ensemble,
+        loudness_match=args.loudness_match,
+        synthetic_air=AIR_LEVELS[args.synthetic_air],
     )
     print(f"[lowvram] total processing time: {time.time() - t0:.1f}s")
     print(f"[lowvram] saved to: {out}")

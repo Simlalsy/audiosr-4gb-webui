@@ -34,6 +34,49 @@ Additions made in this repository (all additive, Windows-oriented tooling):
     README_EN.md               the upstream English README (kept unchanged,
                                plus the fork notice at the top)
 
+DSP options ported from jarredou's AudioSR Colab fork
+(https://github.com/brahianrosswill/AudioSR-Colab-Fork — the same `inference.py`
+that upstream merged through PR #73). They are re-implemented for the low-VRAM
+pipeline in `run_lowvram.py` and exposed in both the CLI and the Web UI:
+
+    --input_cutoff         resample the model input to `cutoff * 2` Hz instead
+                           of low-pass filtering it (fork v0.5)
+    --multiband_ensemble   keep the original audio below `cutoff - 1000` Hz and
+                           mix in the model output above it (fork v0.3)
+    --loudness_match       match every processed chunk to the LUFS loudness of
+                           its input chunk instead of its peak, removing the
+                           chunk-to-chunk volume jumps (fork v0.5)
+
+All three default to OFF, so the stock pipeline and its output are unchanged.
+
+Two further changes on top of that port:
+
+    --synthetic_air        OFF by default. Mixes *synthesised* 2nd-order
+                           harmonics into 24-43 kHz so a 96/192 kHz export is
+                           not empty up top. This is generated content, NOT
+                           recovered detail: AudioSR's mel stops at 24 kHz
+                           (`fmax=24000`) and its VAE/vocoder are 48 kHz models,
+                           so nothing above 24 kHz can be recovered. Upstream
+                           issue #9 ("Going beyond 48KHz, up to 88KHz and
+                           beyond") has been open since 2023 with no solution,
+                           and the only published approach that goes beyond
+                           48 kHz (AudioLBM, NeurIPS 2025 - cascaded latent
+                           bridge models, any-to-192 kHz) has not released code
+                           or weights. Every open-source audio-SR/BWE model found
+                           (AudioSR, AERO, FlashSR, FLowHigh, AP-BWE, UniverSR,
+                           FastWave, ClearerVoice-Studio, ...) tops out at
+                           48 kHz.
+    resampling             the `--out_sr` conversion and the fork input
+                           band-limiting now use librosa (soxr when available)
+                           instead of `torchaudio.functional.resample`. That
+                           resampler uses a short Hann-windowed sinc whose
+                           stop-band is roughly -15 dB just past the cutoff, so
+                           exporting 96 kHz folded audible images of the
+                           21-24 kHz band into 24-27 kHz, and input
+                           band-limiting allowed about -70 dB of aliasing back
+                           into the passband. The replacement rejects both by
+                           100+ dB; the 8-48 kHz content itself is unchanged.
+
 Not included in this repository: the Python virtual environment (`.venv/`),
 the model weights (`pytorch_model.bin`), generated audio (`output*/`) and the
 Web UI upload cache (`webui_uploads/`) — all excluded via `.gitignore`.
@@ -47,6 +90,12 @@ Two upstream files were modified on purpose:
                                ("Recv failure: Connection was reset"), which
                                aborted the whole install. Re-enable it if you
                                actually need diffusers.
+                               `pyloudnorm` was added for the optional LUFS
+                               loudness matching (see below); the feature falls
+                               back to peak matching when it is absent.
+                               `soxr` was added as an optional faster backend
+                               for librosa's high-quality resampling (see
+                               below); librosa's own filter is used without it.
 
     audiosr/clap/training/data.py
                                `RobertaTokenizer.from_pretrained("roberta-base")`

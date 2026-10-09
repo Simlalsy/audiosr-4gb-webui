@@ -153,7 +153,7 @@ class Job(object):
         self.params = params
         self.duration = duration
         self.stereo_active = stereo_active
-        self.state = "queued"  # queued | running | done | error
+        self.state = "queued"  # queued | running | done | error | stopped
         self.log = []
         self.error = None
         self.result = None
@@ -163,6 +163,14 @@ class Job(object):
         self.chunk_start = None
         self.chunk_end = None
         self.ddim_pct = None
+        self.progress = None  # 0..1, reported by the pipeline itself
+        self.stage = ""
+        self.stop_requested = False
+
+    def set_progress(self, fraction, text=""):
+        """Progress hook installed on run_lowvram for the duration of the job."""
+        self.progress = float(fraction)
+        self.stage = text or ""
 
     def add_log(self, line):
         self.log.append(line)
@@ -180,6 +188,10 @@ class Job(object):
     def percent(self):
         if self.state == "done":
             return 100.0
+        if self.progress is not None:
+            # exact, monotonic value from the pipeline; keep a sliver of the bar
+            # for the final resample/save step
+            return float(min(99.0, max(0.5, self.progress * 100.0)))
         dur = self.duration or 0
         if duration_unknown := (dur <= 0):
             return None if self.ddim_pct is None else float(min(99, self.ddim_pct))
@@ -205,6 +217,8 @@ class Job(object):
             "elapsed": round(elapsed, 1),
             "queue_pos": _queue.qsize() if self.state == "queued" else 0,
             "percent": self.percent(),
+            "stage": self.stage,
+            "can_stop": self.state in ("queued", "running"),
             "error": self.error,
             "result_url": f"/api/result?id={self.id}" if self.result else None,
             "result_path": self.result,
@@ -223,34 +237,53 @@ def run_job(job):
         _gpu_vae_mode = want_gpu_vae
     src = ensure_decodable(job.in_path)
     with Tee(job):
-        if p["stereo"] == "split" and lowvram.is_stereo(src):
-            print("[webui] stereo input -> per-channel processing (true stereo, ~2x time)")
-        out_dir = os.path.join(OUTPUT_DIR, get_time())
-        sr_tag = f"{p['out_sr'] / 1000:g}k"
-        name = os.path.splitext(job.display_name)[0] + f"_AudioSR_{sr_tag}"
-        job.result = lowvram.process_and_save(
-            ld, src, out_dir, name,
-            ddim_steps=p["steps"], seed=p["seed"], guidance_scale=p["gs"],
-            chunking=p["chunking"], chunk_duration_s=p["chunk_dur"],
-            overlap_duration_s=2, stereo_mode=p["stereo"], out_sr=p["out_sr"],
-            out_format=p["out_format"],
-        )
-        print(f"[webui] done -> {job.result}")
+        lowvram.set_progress_hook(job.set_progress)
+        try:
+            if p["stereo"] == "split" and lowvram.is_stereo(src):
+                print("[webui] stereo input -> per-channel processing (true stereo, ~2x time)")
+            out_dir = os.path.join(OUTPUT_DIR, get_time())
+            sr_tag = f"{p['out_sr'] / 1000:g}k"
+            name = os.path.splitext(job.display_name)[0] + f"_AudioSR_{sr_tag}"
+            job.result = lowvram.process_and_save(
+                ld, src, out_dir, name,
+                ddim_steps=p["steps"], seed=p["seed"], guidance_scale=p["gs"],
+                chunking=p["chunking"], chunk_duration_s=p["chunk_dur"],
+                overlap_duration_s=2, stereo_mode=p["stereo"], out_sr=p["out_sr"],
+                out_format=p["out_format"],
+                input_cutoff=p["input_cutoff"], multiband_ensemble=p["multiband"],
+                loudness_match=p["loudness_match"], synthetic_air=p["synthetic_air"],
+            )
+            print(f"[webui] done -> {job.result}")
+        finally:
+            lowvram.set_progress_hook(None)
 
 
 def worker_loop():
     while True:
+        lowvram.clear_cancel()
         job = _queue.get()
+        if job.stop_requested:
+            job.state = "stopped"
+            job.t_end = time.time()
+            _queue.task_done()
+            continue
         job.state = "running"
         job.t_start = time.time()
         try:
             run_job(job)
             job.state = "done"
+            job.progress = 1.0
+        except lowvram.JobCancelled:
+            job.state = "stopped"
+            job.stage = ""
+            job.add_log("已强制停止，未输出结果文件")
         except Exception as e:
             job.state = "error"
             job.error = f"{type(e).__name__}: {e}"
             job.add_log("ERROR: " + traceback.format_exc())
         finally:
+            lowvram.clear_cancel()
+            lowvram.set_progress_hook(None)
             job.t_end = time.time()
             _queue.task_done()
             if torch.cuda.is_available():
@@ -338,6 +371,21 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if path == "/api/process":
             self._handle_process()
+        elif path == "/api/stop":
+            job = self._find_job()
+            if not job:
+                self._json({"error": "job not found"}, 404)
+            elif job.state in ("done", "error", "stopped"):
+                self._json({"ok": False, "state": job.state, "message": "任务已结束"})
+            else:
+                job.stop_requested = True
+                job.add_log("收到停止请求，正在中断…")
+                if job.state == "running":
+                    lowvram.request_cancel()
+                else:  # still queued: it never started, resolve it right away
+                    job.state = "stopped"
+                    job.t_end = time.time()
+                self._json({"ok": True, "state": job.state})
         elif path == "/api/open":
             job = self._find_job()
             if job and job.result:
@@ -388,6 +436,8 @@ class Handler(BaseHTTPRequestHandler):
             stereo_raw = str(form.getvalue("stereo", "split")).lower()
             gpu_vae_raw = str(form.getvalue("gpu_vae", "0")).lower()
             out_fmt_raw = str(form.getvalue("out_format", "wav")).lower()
+            multiband_raw = str(form.getvalue("multiband", "0")).lower()
+            loudness_raw = str(form.getvalue("loudness_match", "0")).lower()
             params = {
                 "steps": max(5, min(200, _num("steps", 50, int))),
                 "seed": _num("seed", 42, int),
@@ -398,6 +448,10 @@ class Handler(BaseHTTPRequestHandler):
                 "gpu_vae": gpu_vae_raw in ("1", "true", "yes", "on"),
                 "out_sr": max(8000, min(192000, _num("out_sr", 48000, int))),
                 "out_format": out_fmt_raw if out_fmt_raw in ("wav", "mp3", "flac", "m4a", "ogg") else "wav",
+                "input_cutoff": max(0, min(24000, _num("input_cutoff", 0, int))),
+                "multiband": multiband_raw in ("1", "true", "yes", "on"),
+                "loudness_match": loudness_raw in ("1", "true", "yes", "on"),
+                "synthetic_air": max(0.0, min(0.5, _num("synthetic_air", 0.0, float))),
             }
             probe = ensure_decodable(up_path)
             duration = get_duration(probe)
@@ -444,7 +498,7 @@ header p{margin:4px 0 18px;color:var(--dim);font-size:14px}
 #dropzone.hover{border-color:var(--acc2);background:#1c2533;color:var(--fg)}
 #dropzone b{color:var(--fg)}
 .btn{display:inline-block;border:0;border-radius:10px;padding:10px 18px;font-size:15px;cursor:pointer;text-decoration:none;color:#fff;background:#30363d}
-.btn:hover{filter:brightness(1.15)}.btn.primary{background:linear-gradient(135deg,var(--acc),var(--acc2))}.btn.ghost{background:transparent;border:1px solid var(--line);color:var(--fg)}
+.btn:hover{filter:brightness(1.15)}.btn.primary{background:linear-gradient(135deg,var(--acc),var(--acc2))}.btn.ghost{background:transparent;border:1px solid var(--line);color:var(--fg)}.btn.danger{background:#7f1d1d;border:1px solid #b91c1c}
 .btn[disabled]{opacity:.45;cursor:not-allowed}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
 label{font-size:13px;color:var(--dim);display:block}
@@ -456,6 +510,7 @@ input[type=number],select{width:100%;margin-top:5px;padding:8px 10px;border-radi
 .badge.running{color:#93c5fd;border-color:#1d4ed8;background:#172554}
 .badge.done{color:#86efac;border-color:#15803d;background:#052e16}
 .badge.error{color:#fca5a5;border-color:#b91c1c;background:#450a0a}
+.badge.stopped{color:#fde68a;border-color:#b45309;background:#451a03}
 .bar{height:10px;border-radius:999px;background:#0d1117;border:1px solid var(--line);overflow:hidden;margin:12px 0}
 #barfill{height:100%;width:0%;background:linear-gradient(90deg,var(--acc),#a78bfa);transition:width .4s}
 pre#log{background:#0d1117;border:1px solid var(--line);border-radius:10px;padding:10px;font-size:12px;color:#9aa4b2;max-height:150px;overflow:auto;white-space:pre-wrap;margin:8px 0 0}
@@ -497,11 +552,11 @@ audio{width:100%;margin:10px 0}
         <select id="outsr">
           <option value="48000" selected>48 kHz（原生）</option>
           <option value="44100">44.1 kHz（CD）</option>
-          <option value="96000">96 kHz（仅容器升采样）</option>
+          <option value="96000">96 kHz（可加合成高频）</option>
           <option value="32000">32 kHz</option>
           <option value="24000">24 kHz</option>
           <option value="16000">16 kHz（语音）</option>
-          <option value="192000">192 kHz（仅容器升采样）</option>
+          <option value="192000">192 kHz（可加合成高频）</option>
         </select>
       </label>
       <label>输出格式
@@ -519,10 +574,35 @@ audio{width:100%;margin:10px 0}
           <option value="mono">混合单声道（更快）</option>
         </select>
       </label>
+      <label>输入带宽
+        <select id="cutoff">
+          <option value="0" selected>关闭（默认，全带宽输入）</option>
+          <option value="20000">20 kHz 截止</option>
+          <option value="16000">16 kHz 截止</option>
+          <option value="14000">14 kHz 截止（fork 默认）</option>
+          <option value="12000">12 kHz 截止</option>
+          <option value="10000">10 kHz 截止</option>
+          <option value="8000">8 kHz 截止</option>
+        </select>
+      </label>
+      <label>高频空气感（合成）
+        <select id="air">
+          <option value="0" selected>关闭（默认，24 kHz 以上留空）</option>
+          <option value="0.03">轻（约 -30 dB）</option>
+          <option value="0.06">中（约 -24 dB）</option>
+          <option value="0.12">强（约 -18 dB）</option>
+        </select>
+      </label>
     </div>
     <p class="hint">超过 12 秒的音频会自动分块（块间 2 秒交叉淡化）。勾选 GPU 加速时，单声道约 2–3 倍音频时长、立体声约 4–6 倍；5–10 秒的片段效果最佳。</p>
     <label style="display:flex;gap:8px;align-items:center;margin-top:12px;color:var(--fg);font-size:14px;cursor:pointer">
       <input type="checkbox" id="gpuvae" checked> VAE・声码器也搬到 GPU（fp16）— 大幅提速，占用更多显存
+    </label>
+    <label style="display:flex;gap:8px;align-items:center;margin-top:8px;color:var(--fg);font-size:14px;cursor:pointer">
+      <input type="checkbox" id="multiband"> 多频段融合：低于截止频率保留原始音频，只取模型生成的高频（来自 AudioSR-Colab-Fork）
+    </label>
+    <label style="display:flex;gap:8px;align-items:center;margin-top:8px;color:var(--fg);font-size:14px;cursor:pointer">
+      <input type="checkbox" id="loudness"> 响度匹配（LUFS）：每块对齐输入响度，消除块间音量跳变（来自 AudioSR-Colab-Fork）
     </label>
     <div style="margin-top:14px"><button class="btn primary" id="go" disabled>开始处理</button></div>
   </section>
@@ -530,6 +610,14 @@ audio{width:100%;margin:10px 0}
   <section class="card" id="progresscard" hidden>
     <div class="row" style="justify-content:space-between"><span class="badge" id="state">排队中</span><span style="color:var(--dim);font-size:13px" id="elapsed"></span></div>
     <div class="bar"><div id="barfill"></div></div>
+    <div class="row" style="justify-content:space-between">
+      <span style="color:var(--dim);font-size:13px" id="stage"></span>
+      <span style="color:var(--dim);font-size:13px" id="pct">0%</span>
+    </div>
+    <div style="margin-top:12px">
+      <button class="btn danger" id="stop">■ 强制停止</button>
+      <span style="color:var(--dim);font-size:12.5px;margin-left:10px">停止后当前任务不输出结果，可立即开始下一个</span>
+    </div>
     <pre id="log"></pre>
   </section>
 
@@ -551,9 +639,13 @@ audio{width:100%;margin:10px 0}
       <div class="item"><b>随机种子</b><span>高频重建的随机起点。同一段音频换种子结果会不同——觉得某处高频不自然时，换个数字（或点「随机」）重跑即可。</span></div>
       <div class="item"><b>引导强度（-gs）</b><span>默认 3.5。越大越贴近原始低频、越保守；越小越“自由发挥”，可能出现更多高频但失真风险也高。</span></div>
       <div class="item"><b>分块时长</b><span>超过 12 秒的音频自动分块处理（块间 2 秒交叉淡化）。默认 10 秒/块；一般不用改。</span></div>
-      <div class="item"><b>输出采样率</b><span>模型原生 48 kHz（推荐）。44.1 kHz 适合 CD/音乐库；96k/192k 仅把容器升采样，24 kHz 以上没有新内容；16k 适合语音识别输入。</span></div>
+      <div class="item"><b>输出采样率</b><span>模型原生 48 kHz（推荐）。44.1 kHz 适合 CD/音乐库；16k 适合语音识别输入。96k/192k 只是把容器升采样——模型内容到 24 kHz 为止，24 kHz 以上本来是空的；想让它「有东西」，可把下面的「高频空气感」打开。</span></div>
       <div class="item"><b>输出格式</b><span>WAV 无损原生（推荐归档）。MP3 320k / M4A·AAC 256k / OGG 体积小适合分享；FLAC 无损压缩；转换由 ffmpeg 自动完成，WAV 母版会同时保留。</span></div>
       <div class="item"><b>双声道处理</b><span>「逐声道修复」：左右分别修复再合并，保留真立体声，耗时约 ×2，推荐给歌曲；「混合单声道」更快，但立体声信息会被合并。</span></div>
+      <div class="item"><b>输入带宽 / 多频段融合</b><span>来自 AudioSR-Colab-Fork：选定截止频率后，送入模型的音频会先重采样到「截止频率 ×2」（而不是低通滤波）；再勾选「多频段融合」时，输出会把截止频率以下的部分换回<b>原始音频</b>、只保留模型生成的高频，低频更保真。关闭（默认）＝原始全带宽流程。</span></div>
+      <div class="item"><b>响度匹配（LUFS）</b><span>来自 AudioSR-Colab-Fork v0.5：分块时每块都对齐到对应输入的感知响度（LUFS），消除块与块之间的音量跳变。需要 <code>pyloudnorm</code>；未安装时自动退回峰值匹配。</span></div>
+      <div class="item"><b>进度与强制停止</b><span>进度由推理管线直接上报：百分比 + 当前阶段（声道 / 分块 / DDIM 采样步）+ 预计剩余时间，立体声与长音频分块下也保持单调递增。任务进行中可点「■ 强制停止」，最多一个采样步的延迟内中断，不写出结果文件；停止后可直接开始下一个任务。</span></div>
+      <div class="item"><b>高频空气感（合成）</b><span>⚠️ <b>合成内容，不是还原出来的细节</b>。AudioSR 受 VAE+声码器限制，24 kHz 以上永远是空的；打开后会把模型输出的高频八度取平方、生成 24–43 kHz 的二次谐波混进去，让 96/192 kHz 导出「听起来更通透」。只在输出采样率 &gt; 48 kHz 时生效，默认关闭。</span></div>
       <div class="item"><b>GPU 加速（VAE）</b><span>把声码器和两个 VAE 也搬到显卡（fp16），速度约快 3 倍；峰值显存约 2.9 GB。如果同时玩游戏/看视频，取消勾选可省显存（速度约慢 3 倍）。</span></div>
       <div class="item"><b>耗时参考</b><span>GPU 加速下：单声道约音频时长的 2–3 倍；立体声（逐声道）约 4–6 倍。长音频请耐心等待进度条。</span></div>
     </div>
@@ -564,9 +656,11 @@ audio{width:100%;margin:10px 0}
 <script>
 const $ = s => document.querySelector(s);
 let selectedFile = null, currentId = null, modelReady = false;
-let fileDuration = null;
+let fileDuration = null, stopRequested = false;
+const STATE_TXT = {queued:"排队中",running:"处理中",done:"完成",error:"失败",stopped:"已停止"};
 
 function fmt(sec){ if(sec==null) return "—"; sec=Math.round(sec); const m=Math.floor(sec/60), s=sec%60; return m? `${m}分${s}秒` : `${s}秒`; }
+function resetStopBtn(){ stopRequested = false; $("#stop").disabled = false; $("#stop").textContent = "■ 强制停止"; }
 
 async function health(){
   try{
@@ -618,8 +712,14 @@ $("#go").onclick = async () => {
   fd.append("gpu_vae", $("#gpuvae").checked ? "1" : "0");
   fd.append("out_sr", $("#outsr").value);
   fd.append("out_format", $("#outfmt").value);
+  fd.append("input_cutoff", $("#cutoff").value);
+  fd.append("synthetic_air", $("#air").value);
+  fd.append("multiband", $("#multiband").checked ? "1" : "0");
+  fd.append("loudness_match", $("#loudness").checked ? "1" : "0");
   $("#resultcard").hidden = true; $("#progresscard").hidden = false;
   $("#state").className = "badge"; $("#state").textContent = "上传中…";
+  $("#barfill").style.width = "0%"; $("#pct").textContent = "0%"; $("#stage").textContent = "";
+  resetStopBtn();
   try{
     const r = await fetch("/api/process", {method:"POST", body: fd});
     const j = await r.json();
@@ -632,15 +732,28 @@ async function poll(){
   if(!currentId) return;
   try{
     const j = await (await fetch("/api/status?id=" + currentId)).json();
-    const st = {queued:"排队中",running:"处理中",done:"完成",error:"失败"}[j.state] || j.state;
-    $("#state").textContent = st + (j.queue_pos ? `（前面还有 ${j.queue_pos} 个任务）` : "");
-    $("#state").className = "badge " + j.state;
+    const stopping = stopRequested && (j.state === "running" || j.state === "queued");
+    const st = STATE_TXT[j.state] || j.state;
+    $("#state").textContent = stopping
+      ? "正在停止…"
+      : st + (j.queue_pos ? `（前面还有 ${j.queue_pos} 个任务）` : "");
+    $("#state").className = "badge " + (stopping ? "stopped" : j.state);
+    $("#stage").textContent = j.stage || (j.state === "running" ? "推理中…" : "");
+    const pct = j.percent == null ? null : Math.max(0, Math.min(100, Math.round(j.percent)));
+    if(pct != null) $("#barfill").style.width = pct + "%";
+    $("#pct").textContent = pct == null ? "—" : pct + "%";
     const speedFactor = ($("#gpuvae").checked ? 2.5 : 5.5) * (j.stereo_active ? 2 : 1);
-    $("#elapsed").textContent = `已用时 ${fmt(j.elapsed)}` + (fileDuration ? ` · 预计共约 ${fmt(fileDuration*speedFactor)}` : "");
-    if(j.percent != null) $("#barfill").style.width = j.percent + "%";
+    if(j.state === "running" && pct >= 2 && pct < 100){
+      const total = j.elapsed * 100 / pct;
+      $("#elapsed").textContent = `已用时 ${fmt(j.elapsed)} · 预计还需 ${fmt(Math.max(0, total - j.elapsed))}`;
+    } else {
+      $("#elapsed").textContent = `已用时 ${fmt(j.elapsed)}` + (fileDuration ? ` · 预计共约 ${fmt(fileDuration*speedFactor)}` : "");
+    }
+    if(!stopRequested) $("#stop").disabled = !j.can_stop;
     $("#log").textContent = (j.log||[]).join("\n");
     $("#log").scrollTop = $("#log").scrollHeight;
     if(j.state === "done"){
+      resetStopBtn();
       const url = j.result_url + "&t=" + Date.now();
       $("#player").src = url; $("#dl").href = url; $("#dl").setAttribute("download", j.result_name || "output.wav");
       const ext = ((j.result_name || "output.wav").split(".").pop() || "wav").toUpperCase();
@@ -650,10 +763,31 @@ async function poll(){
       $("#resultpath").textContent = text;
       $("#resultcard").hidden = false; currentId = null; health(); return;
     }
-    if(j.state === "error"){ currentId = null; health(); return; }
+    if(j.state === "error" || j.state === "stopped"){
+      resetStopBtn();
+      if(j.state === "stopped") $("#stage").textContent = "任务已停止，未生成结果文件";
+      currentId = null; health(); return;
+    }
   }catch(e){ /* keep polling */ }
   setTimeout(poll, 1000);
 }
+
+$("#stop").onclick = async () => {
+  if(!currentId || stopRequested) return;
+  stopRequested = true;
+  $("#stop").disabled = true;
+  $("#stop").textContent = "正在停止…";
+  $("#state").className = "badge stopped";
+  $("#state").textContent = "正在停止…";
+  try{
+    const r = await fetch("/api/stop?id=" + currentId, {method:"POST"});
+    const j = await r.json();
+    if(j.ok === false){ resetStopBtn(); $("#stage").textContent = j.message || "任务已结束"; }
+  }catch(e){
+    resetStopBtn();
+    $("#stage").textContent = "停止请求失败：" + String(e);
+  }
+};
 
 $("#openfolder").onclick = () => fetch("/api/open?id=" + (currentId || (new URL($("#player").src, location.href)).searchParams.get("id")), {method:"POST"});
 $("#again").onclick = () => { $("#resultcard").hidden = true; $("#progresscard").hidden = true; setFile(null); health(); };
